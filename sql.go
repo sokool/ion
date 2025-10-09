@@ -258,10 +258,6 @@ var sqlConnections sync.Map
 // The function applies connection pooling configurations if provided in the URL.
 // Thread-safe and avoids duplicate connections using sync.Map.
 func SQLConnection(ctx context.Context, name ...string) (*SQLDB, error) {
-	if InUnitTests() {
-		return nil, nil
-	}
-
 	if len(name) == 0 {
 		name = append(name, "postgres", "mysql")
 	}
@@ -286,7 +282,12 @@ func SQLConnection(ctx context.Context, name ...string) (*SQLDB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open(url.Scheme, url.String())
+	u := url.String()
+	switch url.Scheme {
+	case "mysql":
+		u = url.Format("user:password@tcp(host:port)path?query")
+	}
+	db, err := sql.Open(url.Scheme, u)
 	if err != nil {
 		return nil, ErrSQL.Wrap(err)
 	}

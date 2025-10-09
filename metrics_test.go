@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"ion"
+	"github.com/sokool/ion"
 )
 
 func TestMetrics_Percentile1000ConcurrentCalls(t *testing.T) {

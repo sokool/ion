@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	. "ion"
+	. "github.com/sokool/ion"
 )
 
 func TestJSON(t *testing.T) {

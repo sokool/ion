@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"ion"
+	"github.com/sokool/ion"
 )
 
 func TestEndpoint(t *testing.T) {

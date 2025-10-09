@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"ion"
+	"github.com/sokool/ion"
 )
 
 func TestErr(t *testing.T) {
