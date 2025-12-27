@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -17,7 +18,7 @@ type LLMTool struct {
 	// bool = true make llm call again with returned string
 	Execute func(JSON) (string, bool)
 	// Schemas represent function input json schema objects
-	Schemas []JSON
+	Schemas []Meta
 }
 
 // NewLLMToolMD parses the provided markdown string to extract function definitions and
@@ -42,11 +43,8 @@ func NewLLMTool[T any](name, desc string, fn func(T) (string, bool)) (LLMTool, e
 	if err != nil {
 		return LLMTool{}, err
 	}
-	j, err := NewJSON(b)
-	if err != nil {
-		return LLMTool{}, err
-	}
-	for n = range j.Select("definitions") {
+	j := JSON(b)
+	for _, n = range j.Select("definitions").Each {
 		break
 	}
 	if n == "" {
@@ -63,9 +61,9 @@ func NewLLMTool[T any](name, desc string, fn func(T) (string, bool)) (LLMTool, e
 			}
 			return fn(t)
 		},
-		Schemas: []JSON{
+		Schemas: []Meta{
 			{
-				"function": JSON{
+				"function": Meta{
 					"description": desc,
 					"name":        name,
 					"parameters":  j.Select("definitions").Select(n),
@@ -89,7 +87,7 @@ func (t LLMTool) HasName(n string) bool {
 		return true
 	}
 	for _, s := range t.Schemas {
-		if s.Text("function.name") == n {
+		if s.JSON("function").Text("name") == n {
 			return true
 		}
 	}
@@ -97,11 +95,7 @@ func (t LLMTool) HasName(n string) bool {
 }
 
 func (t LLMTool) MarshalJSON() ([]byte, error) {
-	p := JSON{
-		"Function": reflect.TypeOf(t.Execute).String(),
-		"Schemas":  t.Schemas,
-	}
-	return p.MarshalJSON()
+	return []byte(fmt.Sprintf(`{"Function":"%s", "Schemas": "%s"}`, reflect.TypeOf(t.Execute), t.Schemas)), nil
 }
 
 func (t *LLMTool) UnmarshalJSON(b []byte) error {
@@ -109,8 +103,8 @@ func (t *LLMTool) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (t LLMTool) parseMD(s string) ([]JSON, error) {
-	var scm []JSON
+func (t LLMTool) parseMD(s string) ([]Meta, error) {
+	var scm []Meta
 	scn := bufio.NewScanner(strings.NewReader(s))
 	fni := 0
 	var fns []string
@@ -140,19 +134,19 @@ func (t LLMTool) parseMD(s string) ([]JSON, error) {
 	return scm, nil
 }
 
-func (t LLMTool) toJSONSchema(s string) (JSON, error) {
+func (t LLMTool) toJSONSchema(s string) (Meta, error) {
 	var (
 		re                             = regexp.MustCompile(`^(\w+)\s+(\S+)\s*-\s*(.*)$`)
 		lns                            = strings.Split(s, "\n")
 		title, intro, param, typ, desc string
-		props                          = make(JSON)
+		props                          = make(Meta)
 		reqs                           []string
-		buildParam                     = func(typ, desc string) JSON {
+		buildParam                     = func(typ, desc string) Meta {
 			desc = strings.TrimSpace(desc)
 			if strings.HasPrefix(typ, "array[") && strings.HasSuffix(typ, "]") {
-				return JSON{"type": "array", "description": desc, "items": JSON{"type": typ[6 : len(typ)-1]}}
+				return Meta{"type": "array", "description": desc, "items": Meta{"type": typ[6 : len(typ)-1]}}
 			}
-			return JSON{"type": typ, "description": desc}
+			return Meta{"type": typ, "description": desc}
 		}
 	)
 
@@ -182,12 +176,12 @@ func (t LLMTool) toJSONSchema(s string) (JSON, error) {
 		}
 	}
 
-	return JSON{
+	return Meta{
 		"type": "function",
-		"function": JSON{
+		"function": Meta{
 			"name":        title,
 			"description": strings.TrimSpace(intro),
-			"parameters": JSON{
+			"parameters": Meta{
 				"type":                 "object",
 				"properties":           props,
 				"required":             reqs,

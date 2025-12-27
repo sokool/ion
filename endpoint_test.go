@@ -31,7 +31,7 @@ func TestNewDomain(t *testing.T) {
 
 func TestDomain(t *testing.T) {
 	api := &ion.API{}
-	out, err := api.Endpoint("/hello").Post(ion.JSON{})
+	out, err := api.Endpoint("/hello").Post(ion.Meta{})
 	if err == nil {
 		t.Fatal("error expected")
 	}

@@ -135,7 +135,7 @@ func MustAPI(osVarName string) *API {
 	return d
 }
 
-func (a *API) Endpoint(path string, args ...any) Endpoint[JSON, JSON] {
+func (a *API) Endpoint(path string, args ...any) Endpoint[Meta, JSON] {
 	return APIEndpoint(a, path, args...)
 }
 

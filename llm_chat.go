@@ -17,7 +17,7 @@ type LLMChat struct {
 	Uncommitted []Message
 	Muted       bool
 	Persistent  bool
-	Meta        JSON
+	Meta        Meta
 }
 
 func ReadLLMChat(id, name string) (*LLMChat, error) {
@@ -44,7 +44,7 @@ func (c *LLMChat) Complete(ctx context.Context, m ...Message) ([]Message, error)
 		Metrics.Count("chats{name=%q}", 1, c.Name)
 	}
 	if c.Meta == nil {
-		c.Meta = JSON{}
+		c.Meta = Meta{}
 	}
 	defer func() { c.Uncommitted = nil }()
 	if len(c.Messages) == 0 && c.ID != "" {

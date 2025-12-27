@@ -54,7 +54,7 @@ func JSONEndpoint(url string, args ...any) Endpoint[JSON, JSON] {
 	return NewEndpoint[JSON, JSON](url, args...)
 }
 
-func APIEndpoint(d *API, path string, args ...any) Endpoint[JSON, JSON] {
+func APIEndpoint(d *API, path string, args ...any) Endpoint[Meta, JSON] {
 	if d == nil {
 		d = &API{}
 	}
@@ -62,7 +62,7 @@ func APIEndpoint(d *API, path string, args ...any) Endpoint[JSON, JSON] {
 	if len(args) > 0 {
 		path = fmt.Sprintf(path, args...)
 	}
-	e := Endpoint[JSON, JSON]{
+	e := Endpoint[Meta, JSON]{
 		path:    path,
 		method:  "GET",
 		domain:  d,

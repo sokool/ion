@@ -20,7 +20,7 @@ type LLMCompletion struct {
 	// Tools provides functions and schemas for tool-based completions.
 	Tool []LLMTool
 
-	Options JSON
+	Options Meta
 }
 
 func (c *LLMCompletion) Complete(ctx context.Context, m ...Message) ([]Message, error) {
@@ -61,73 +61,74 @@ func (c *LLMCompletion) MDTool(markdown string, fn Function) error {
 
 func (c *LLMCompletion) Option(name string, value any) *LLMCompletion {
 	if c.Options == nil {
-		c.Options = JSON{}
+		c.Options = Meta{}
 	}
 	c.Options[name] = value
 	return c
 }
 
 func (c *LLMCompletion) gemini(ctx context.Context, api *API, m ...Message) ([]Message, error) {
-	var tools []JSON
+	var tools []Meta
 	for i := range c.Tool {
 		tools = append(tools, c.Tool[i].Schemas...)
 	}
 
-	var sys, cts, tls []JSON
+	var sys, cts, tls []Meta
 	for i := range m {
 		rol, txt := m[i].Role, m[i].Content
 		switch rol {
 		case "system":
-			sys = append(sys, JSON{
+			sys = append(sys, Meta{
 				"text": txt,
 			})
 		case "assistant":
-			cts = append(cts, JSON{
+			cts = append(cts, Meta{
 				"role": "model",
-				"parts": []JSON{
+				"parts": []Meta{
 					{"text": txt},
 				},
 			})
 		case "function":
-			cts = append(cts, JSON{
+			cts = append(cts, Meta{
 				"role": "user",
-				"parts": []JSON{
+				"parts": []Meta{
 					{
-						"functionResponse": JSON{
+						"functionResponse": Meta{
 							"name":     m[i].Name,
-							"response": JSON{"result": txt},
+							"response": Meta{"result": txt},
 						},
 					},
 				},
 			})
 		case "user":
-			cts = append(cts, JSON{
+			cts = append(cts, Meta{
 				"role": "user",
-				"parts": []JSON{
+				"parts": []Meta{
 					{"text": txt},
 				},
 			})
 		}
 	}
-	var fns []JSON
+	var fns []Meta
 	for _, t := range c.Tool {
 		for _, s := range t.Schemas {
-			fns = append(fns, s.
-				Select("function").
-				Delete("parameters.additionalProperties"),
-			)
+			fns = append(fns, s)
+			//fns = append(fns, s.
+			//	Select("function").
+			//	Delete("parameters.additionalProperties"),
+			//)
 		}
 	}
 
 	if len(fns) > 0 {
-		tls = append(tls, JSON{"functionDeclarations": fns})
+		tls = append(tls, Meta{"functionDeclarations": fns})
 	}
 	if _, ok := c.Options["google_search"]; ok {
-		tls = append(tls, JSON{"google_search": JSON{}})
+		tls = append(tls, Meta{"google_search": Meta{}})
 	}
-	req := JSON{}
+	req := Meta{}
 	if len(sys) != 0 {
-		req["system_instruction"] = JSON{"parts": sys}
+		req["system_instruction"] = Meta{"parts": sys}
 	}
 	if len(cts) != 0 {
 		req["contents"] = cts
@@ -166,30 +167,30 @@ func (c *LLMCompletion) gemini(ctx context.Context, api *API, m ...Message) ([]M
 }
 
 func (c *LLMCompletion) chatGPT(ctx context.Context, api *API, msg ...Message) ([]Message, error) {
-	var tools []JSON
+	var tools []Meta
 	for i := range c.Tool {
 		tools = append(tools, c.Tool[i].Schemas...)
 	}
 
-	var mm []JSON
+	var mm []Meta
 	for _, m := range msg {
 		if _, ok := m.Meta["tool_calls"]; ok && m.Content == "" {
-			mm = append(mm, JSON{
-				"role": "assistant",
+			mm = append(mm, Meta{
+				"role":       "assistant",
 				"tool_calls": []JSON{
-					m.Meta.Select("tool_calls"),
+					//m.Meta["tool_calls"],
 				},
 			})
 			continue
 		}
 
-		y := JSON{"role": m.Role, "content": m.Content, "userType": m.UserType}
+		y := Meta{"role": m.Role, "content": m.Content, "userType": m.UserType}
 		if m.Role == "function" {
 			y["role"], y["tool_call_id"] = "tool", m.ID
 		}
 		mm = append(mm, y)
 	}
-	res, err := api.Endpoint("/v1/chat/completions").Context(ctx).Cache(c.Cache).Post(JSON{
+	res, err := api.Endpoint("/v1/chat/completions").Context(ctx).Cache(c.Cache).Post(Meta{
 		"model":       c.Model,
 		"tools":       tools,
 		"temperature": c.Temperature,
@@ -205,13 +206,11 @@ func (c *LLMCompletion) chatGPT(ctx context.Context, api *API, msg ...Message) (
 	for fcs := range res.Select("choices[0].message.tool_calls").Each {
 		fid := fcs.Text("id")
 		fnn := fcs.Text("function.name")
-		fna, err := NewJSON(fcs.Bytes("function.arguments"))
-		if err != nil {
-			return nil, ErrCompletion.Wrap(err)
-		}
+		fna := fcs.Select("function.arguments").Meta()
+
 		fna["_method"], fna["_methodID"] = fnn, fid
-		msg = append(msg, Message{Role: "assistant", UserType: "llm", Meta: JSON{"tool_calls": fcs}})
-		if msg, err = c.tool(ctx, msg, fid, fnn, fna); err != nil {
+		msg = append(msg, Message{Role: "assistant", UserType: "llm", Meta: Meta{"tool_calls": fcs}})
+		if msg, err = c.tool(ctx, msg, fid, fnn, fna.JSON()); err != nil {
 			return nil, err
 		}
 	}
@@ -228,7 +227,7 @@ func (c *LLMCompletion) api() (*API, string, error) {
 	if err != nil {
 		return nil, vendor, err
 	}
-	def := JSON{}
+	def := Meta{}
 	if c.Model == "" {
 		c.Model = api.URL.Query("model")
 		def["model"] = c.Model
@@ -269,7 +268,7 @@ type Message struct {
 	Role     string `json:"role"`
 	UserType string `json:"userType,omitempty"`
 	Content  string `json:"content"`
-	Meta     JSON   `json:"meta"`
+	Meta     Meta   `json:"meta"`
 }
 
 var (

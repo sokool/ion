@@ -23,6 +23,8 @@ func TestJSON(t *testing.T) {
 	},
 	"nick": null,
 	"skills": [],
+	"timestamp": "1714675234.123456",
+	"date":"2025-11-21T14:32:05.223355779Z",
 	"jobs": [
 		{"title": "developer", "salary": "100$"},
 		{"title": "manager", "salary": "200$"},
@@ -53,12 +55,8 @@ func TestJSON(t *testing.T) {
 	var s string
 	var f float64
 	var p Point
-	if err := m.Read("name", &s).Read("age", &f).Read("location.point", &p).Error(); err != nil {
+	if err := m.Read("name", &s, "age", &f, "location.point", &p); err != nil {
 		t.Fatalf("expected nil, got %s err", err)
-	}
-	var a string
-	if err := m.Read("location.name", &a, "Food").Error(); err != nil || a != "Food" {
-		t.Fatalf("expected Food, got %s", m.Text("location.name"))
 	}
 	if s != "John" {
 		t.Fatalf("expected John, got %s", s)
@@ -69,13 +67,13 @@ func TestJSON(t *testing.T) {
 	if p.Lat != 40.7128 && p.Lon != -74.006 {
 		t.Fatalf("expected 40.7128 -74.006, got %v", p)
 	}
-	if n := m.Number("height"); n != 180.25 || m.Error() != nil {
+	if n := m.Number("height"); n != 180.25 {
 		t.Fatalf("expected 180.25, got %v", n)
 	}
 	if s := m.Sprintf("%s: %s", "name", "location.address"); s != "John: New York Hudson 60" {
 		t.Fatalf("expected John New York Hudson 60, got %s", s)
 	}
-	if !m.Select("nick").IsEmpty() {
+	if b := m.Select("nick"); !(b.IsEmpty() && b.IsNull()) {
 		t.Fatalf("expected empty nick")
 	}
 	if !m.Select("skills").IsEmpty() {
@@ -102,31 +100,21 @@ func TestJSON(t *testing.T) {
 	if s = m.Select("jobs[?(@.title == 'manager')]").Text("salary"); s != "200$" {
 		t.Fatalf("expected 200$, got %s", s)
 	}
-	if err := m.Select("jobs[1.title").Error(); err == nil {
-		t.Fatalf("expected error, got nil")
+	if j := m.Select("jobs[1.title"); j != nil {
+		t.Fatalf("expected nil, got %v", j)
 	}
 	var ss []string
 	if err := m.Select("jobs[*].title").To(&ss); err != nil || fmt.Sprintf("%v", ss) != "[developer manager ceo]" {
 		t.Fatalf("expected nil, got %s", err)
 	}
-}
-
-func TestJSON_MarshalJSON(t *testing.T) {
-	object := []byte(`{
-		"empty": null,
-		"tags": ["Blockchain"]
+	//if n := m.Similarity("Hudson", "location.address"); n != 0.4473684210526316 {
+	//	t.Fatalf("expected 0.4473684210526316, got %f", n)
+	//}
+	if d := m.Time("timestamp"); d.Nanosecond() != 123456000 {
+		t.Fatalf("expected 123456, got %d", d.Nanosecond())
 	}
-	`)
-	var m JSON
-	if err := m.UnmarshalJSON(object); err != nil {
-		t.Fatal(err)
-	}
-	b, err := m.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(b) != `{"empty":null,"tags":["Blockchain"]}` {
-		t.Fatalf("expected [Blockchain], got %s", string(b))
+	if d := m.Time("date"); d.Nanosecond() != 223355779 {
+		t.Fatalf("expected 223355779, got %d", d.Nanosecond())
 	}
 }
 
@@ -151,3 +139,94 @@ func TestJSON_All(t *testing.T) {
 		t.Fatalf("expected TomJerrySpikeTyke, got %s", s)
 	}
 }
+
+//func TestNewJSON(t *testing.T) {
+//
+//	tests := []struct {
+//		name    string
+//		input   []byte
+//		want    any
+//		wantErr bool
+//	}{
+//		{
+//			name:  "empty object",
+//			input: []byte(`{}`),
+//			want:  Meta{},
+//		},
+//		{
+//			name:  "simple object",
+//			input: []byte(`{"name":"John","age":30}`),
+//			want:  Meta{"name": "John", "age": float64(30)},
+//		},
+//		{
+//			name:  "nested object",
+//			input: []byte(`{"user":{"name":"John","age":30}}`),
+//			want:  Meta{"user": JSON{"name": "John", "age": 30}},
+//		},
+//		{
+//			name:  "array",
+//			input: []byte(`["a","b","c"]`),
+//			want:  Meta{":array:": []any{"a", "b", "c"}},
+//		},
+//		{
+//			name:    "invalid json",
+//			input:   []byte(`{"name":"John"`),
+//			wantErr: true,
+//		},
+//		{
+//			name:    "empty input",
+//			input:   []byte{},
+//			wantErr: true,
+//		},
+//		{
+//			name:  "string value",
+//			input: []byte(`"hello"`),
+//			want:  "hello",
+//		},
+//		{
+//			name:  "string value without quotes",
+//			input: []byte(`hello`),
+//			want:  "hello",
+//		},
+//	}
+//
+//	for _, tt := range tests {
+//		t.Run(tt.name, func(t *testing.T) {
+//			got, err := NewJSON(tt.input)
+//			if (err != nil) != tt.wantErr {
+//				t.Errorf("NewJSON() error = %v, wantErr %v", err, tt.wantErr)
+//				return
+//			}
+//			if !tt.wantErr && fmt.Sprint(got) != fmt.Sprint(tt.want) {
+//				t.Errorf("NewJSON() = %v, want %v", got, tt.want)
+//			}
+//		})
+//	}
+//}
+
+//func TestJSON_Join(t *testing.T) {
+//	fragmentsJSON := []string{
+//		`{"function":{"arguments":"","name":"StoreEmail"},"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R","index":0,"type":"function"}`,
+//		`{"function":{"arguments":"{\""},"index":0}`,
+//		`{"function":{"arguments":"Email"},"index":0}`,
+//		`{"function":{"arguments":"Address"},"index":0}`,
+//		`{"function":{"arguments":"\\\":\\\""},"index":0}`,
+//		`{"function":{"arguments":"m"},"index":0}`,
+//		`{"function":{"arguments":"@"},"index":0}`,
+//		`{"function":{"arguments":"rian"},"index":0}`,
+//		`{"function":{"arguments":".pl"},"index":0}`,
+//		`{"function":{"arguments":"\\\"}"},"index":0}`,
+//	}
+//
+//	var fragments []JSON
+//	for _, s := range fragmentsJSON {
+//		var m JSON
+//		_ = json.Unmarshal([]byte(s), &m)
+//		fragments = append(fragments, m)
+//	}
+//
+//	j := JSON{}
+//	j.Join(fragments...)
+//
+//	fmt.Println(j)
+//}

@@ -47,7 +47,7 @@ func (p Prompt) Chat() *LLMChat {
 	return ParseLLMChat(p).LLMChat
 }
 
-func (p Prompt) Params(j JSON) Prompt {
+func (p Prompt) Params(j Meta) Prompt {
 	c := ParseLLMChat(p)
 	c.Meta = j
 	return c.Convert()
@@ -59,7 +59,7 @@ func (p Prompt) Param(key string, value any) Prompt {
 	return r.Convert()
 }
 
-func (p Prompt) parse(s string, j JSON) (string, error) {
+func (p Prompt) parse(s string, j Meta) (string, error) {
 	t, err := template.
 		New("parser").
 		Option("missingkey=zero").
@@ -111,7 +111,7 @@ type prompt struct {
 }
 
 func ParseLLMChat(p Prompt) *prompt {
-	r := prompt{&LLMChat{Prompt: string(p), Meta: JSON{}}}
+	r := prompt{&LLMChat{Prompt: string(p), Meta: Meta{}}}
 	if err := json.Unmarshal([]byte(p), &r); err != nil {
 		//
 	}

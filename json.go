@@ -1,369 +1,400 @@
 package ion
 
 import (
-	"encoding"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/ohler55/ojg/jp"
-	"github.com/ohler55/ojg/oj"
+	//"github.com/ohler55/ojg/oj"
+
+	"github.com/tidwall/gjson"
 )
 
-// JSON
-type JSON map[string]any
+// JSON represents raw JSON bytes.
+// It serves as a efficient wrapper around []byte to provide
+// dot-notation navigation, type checking, and flattening.
+type JSON []byte
 
-func NewJSON(b []byte) (JSON, error) {
-	a, err := oj.Parse(b)
-	if err != nil {
-		return nil, err
-	}
-	if a == nil {
-		return JSON{}, nil
-	}
-	if m, ok := a.(map[string]any); ok {
-		return m, nil
-	}
-	if m, ok := a.([]any); ok {
-		return JSON{":array:": m}, nil
-	}
-	if m, ok := a.(string); ok {
-		return JSON{":string:": m}, nil
-	}
-	if m, ok := a.(int64); ok {
-		return JSON{":number:": m}, nil
-	}
-	if m, ok := a.(float64); ok {
-		return JSON{":number:": m}, nil
-	}
-	return nil, Errorf("invalid type %T", a)
-}
-
-// Number returns the float64 at the given JSON path.
-func (m JSON) Number(path string) (f float64) {
-	if err := m.Select(path).To(&f); err != nil {
-		m.report(err)
-	}
-	return f
-}
-
-// Text returns the string at the given JSON path.
-func (m JSON) Text(path string) (s string) {
-	if err := m.Select(path).To(&s); err != nil {
-		m.report(err)
-	}
-	return s
-}
-
-func (m JSON) Is(a string, path ...string) bool {
-	a = strings.ToLower(a)
-	for i := range path {
-		if a == strings.ToLower(m.Text(path[i])) {
-			return true
-		}
-	}
-	return false
-}
-
-func (m JSON) Bytes(path string) (s []byte) {
-	return []byte(m.Select(path).String())
-}
-
-func (m JSON) Sprintf(msg string, paths ...string) string {
-	args := make([]any, len(paths))
-	for i, p := range paths {
-		args[i] = m.Text(p)
-	}
-	return fmt.Sprintf(msg, args...)
-}
-
-func (m JSON) Printf(msg string, paths ...string) {
-	out := m.Sprintf(msg, paths...)
-	fmt.Printf("%s", out)
-}
-
-// Bool returns the bool at the given JSON path.
-func (m JSON) Bool(path string) (b bool) {
-	if err := m.Select(path).To(&b); err != nil {
-		m.report(err)
-	}
-	return b
-}
-
-// Select returns the JSON at the given JSON path.
-func (m JSON) Select(path string, args ...any) JSON {
-	if path == "" {
-		return m
-	}
-	path = fmt.Sprintf(path, args...)
-	exp, err := jp.ParseString(path)
-	if err != nil {
-		m.report(Errorf("json: '%s' invalid JSON Path format", path))
-		return m
-	}
-
-	var n any = m
-	if m[":array:"] != nil {
-		n = m[":array:"]
-	}
-	var y any
-	if g := exp.Get(n); g == nil {
-		return JSON{}
-	} else if len(g) == 1 {
-		y = g[0]
-	} else {
-		y = g
-	}
-
-	switch y := y.(type) {
-	case string:
-		return JSON{":string:": y}
-	case float64, int64:
-		return JSON{":number:": y}
-	case bool:
-		return JSON{":bool:": y}
-	case []any:
-		return JSON{":array:": y}
-	case map[string]any:
-		return y
-	case JSON:
-		return y
-	case nil:
-		return JSON{}
-	default:
-		m.report(Errorf("json: %s not supported %T data type", path, y))
-	}
-	return m
-}
-
-func (m JSON) Delete(path string) JSON {
-	var n map[string]any
-	m.To(&n)
-	e, _ := jp.ParseString(path)
-	e.Del(&n)
-	return n
-
-}
-
-// To transform a JSON into the given value.
-func (m JSON) To(value any, fallback ...any) error {
-	if m.IsEmpty() {
-		if len(fallback) == 0 {
-			return nil
-		}
-		va := reflect.ValueOf(value)
-		vb := reflect.ValueOf(fallback[0])
-		if va.Kind() != reflect.Ptr {
-			panic("a must be pointer")
-		}
-		if va.Type().Elem() != vb.Type() {
-			panic("a and b must be same type")
-		}
-		va.Elem().Set(vb)
+// Select navigates to the specified path using dot notation and returns the found JSON fragment.
+// If the path does not exist, it returns nil (which behaves as an Empty JSON).
+// Example: j.Select("users.0.name")
+func (j JSON) Select(paths ...string) JSON {
+	if len(j) == 0 {
 		return nil
 	}
-	if err := m.Error(); err != nil {
-		return err
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
 
-	switch to := value.(type) {
-	case json.Unmarshaler:
-		err = to.UnmarshalJSON(b)
-	case encoding.TextUnmarshaler:
-		if n := len(b); n >= 2 && b[0] == '"' && b[n-1] == '"' {
-			b = b[1 : n-1]
+	for i := range paths {
+		paths[i] = strings.ReplaceAll(paths[i], "[?(@.", ".#(")
+		paths[i] = strings.ReplaceAll(paths[i], ")]", ")")
+		paths[i] = strings.ReplaceAll(paths[i], "'", "\"")
+		if strings.Contains(paths[i], "[*]") {
+			if strings.HasPrefix(paths[i], "[*]") {
+				paths[i] = "#" + paths[i][3:]
+			} else {
+				paths[i] = strings.ReplaceAll(paths[i], "[*]", ".#")
+			}
 		}
-		err = to.UnmarshalText(b)
-	case *float64:
-		var s string
-		if err = json.Unmarshal(b, &s); err != nil {
-			return json.Unmarshal(b, to)
+		paths[i] = regexp.MustCompile(`\[(\d+)\]`).ReplaceAllString(paths[i], ".$1")
+	}
+	switch len(paths) {
+	case 0:
+		return j
+	case 1:
+		bytes := gjson.GetBytes(j, paths[0])
+		if !bytes.Exists() {
+			return nil
 		}
-		*to, err = strconv.ParseFloat(s, 64)
-	case *int:
-		var s string
-		if err = json.Unmarshal(b, &s); err != nil {
-			return json.Unmarshal(b, to)
-		}
-		x, err := strconv.ParseInt(s, 10, 32)
-		if err != nil {
-			return Errorf("json: %s is not int", s)
-		}
-		*to = int(x)
+		return JSON(bytes.Raw)
 	default:
-		err = json.Unmarshal(b, to)
-	}
 
-	if err != nil {
-		return err
+		// 2. Use a map to construct the new object safely
+		// json.RawMessage ensures that existing JSON strings/objects aren't escaped twice.
+		merged := make(map[string]json.RawMessage)
+		for i, bytes := range gjson.GetManyBytes(j, paths...) {
+			path := paths[i]
+			// Determine the key name (take the last part after the dot)
+			// "users.0.name" -> "name"
+			// "config.net.ip" -> "ip"
+			key := path
+			if idx := strings.LastIndex(path, "."); idx != -1 {
+				key = path[idx+1:]
+			}
+
+			// Add to map
+			if bytes.Exists() {
+				merged[key] = json.RawMessage(bytes.Raw)
+			} else {
+				// Explicitly set null if path doesn't exist (optional, but good for consistency)
+				merged[key] = json.RawMessage("null")
+			}
+		}
+		output, err := json.Marshal(merged)
+		if err != nil {
+			fmt.Printf("JSON error %s", err)
+		}
+		return output
 	}
-	return nil
 }
 
-// Read reads the JSON attribute at the given JSON path into the variable to.
-// It returns the JSON at root level and do not point at path.
-// todo
-//   - Refactor method signature to Read(to any, path string, fallback ...any) JSON
-func (m JSON) Read(path string, to any, fallback ...any) JSON {
-	if err := m.Select(path).To(to, fallback...); err != nil {
-		m.report(err)
-		return m
-	}
-	return m
-}
-
-// ReadF selects values from the given JSON paths, formats them into a message,
-// and tries to deserialize that message into the provided target 'to'.
+// Read extracts multiple JSON values in a single call.
 //
-// It uses fmt.Sprintf with the given message format string 'msg' and the values
-// resolved from 'paths'. If deserialization fails, the error is reported.
-// Returns the original JSON for chaining.
+// Each argument pair must follow the pattern (path, target), where `path`
+// is a string representing a JSON selector and `target` is a pointer
+// to a value that should receive the unmarshaled data.
+//
+// The function attempts to unmarshal all provided pairs. If any of them
+// fail, all errors are collected and returned as a joined error.
+// A non-nil error indicates at least one failure.
 //
 // Example usage:
 //
-//	var data SomeStruct
-//	meta.ReadF(&data, "%s-%s", "path.to.foo", "path.to.bar")
-func (m JSON) ReadF(to any, msg string, paths ...string) JSON {
-	args := make([]any, len(paths))
-	for i, p := range paths {
-		args[i] = m.Select(p).value()
+//	var name string
+//	var age int
+//	err := j.Read(
+//		"user.name", &name,
+//		"user.age",  &age,
+//	)
+//	if err != nil {
+//		// Handle partial extraction failures.
+//	}
+//
+// Behavior notes:
+//   - Arguments must be provided in even count.
+//   - If a pair is given in reversed order (value, path), the function
+//     will attempt to auto-correct as long as one element is a string.
+//   - Extraction continues even if earlier pairs fail.
+//
+// Returns:
+//
+//	A joined error containing all pair failures or nil if all succeeded.
+func (j JSON) Read(pathTargets ...any) error {
+	if n := len(pathTargets); n == 0 || n%2 != 0 {
+		return fmt.Errorf("args must be non-empty pairs of (path, target)")
 	}
-	if err := (JSON{":string:": fmt.Sprintf(msg, args...)}).To(to); err != nil {
-		m.report(err)
+
+	var errs []error
+	for i := 0; i < len(pathTargets); i += 2 {
+		// Assume standard order: (string, any)
+		path, ok := pathTargets[i].(string)
+		value := pathTargets[i+1]
+		// If assumption fails, try swapped order: (any, string)
+		if !ok {
+			path, ok = pathTargets[i+1].(string)
+			value = pathTargets[i]
+		}
+		if !ok {
+			errs = append(errs, fmt.Errorf("pair at index %d missing string path", i))
+			continue
+		}
+		if err := j.Select(path).To(value); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Flat flattens the entire JSON structure into a one-dimensional map.
+// Nested keys are joined by dots ("parent.child") and array indices
+// are included ("list.0.item").
+//
+// This is useful for diffing JSONs, logging, or converting to environment variables.
+func (j JSON) Flat() Meta {
+	result := make(Meta)
+
+	if j.IsEmpty() {
+		return result
+	}
+
+	// Parse the bytes lightly
+	parsed := gjson.ParseBytes(j)
+
+	// Recursive function to traverse the JSON tree
+	var walk func(prefix string, node gjson.Result)
+
+	walk = func(prefix string, node gjson.Result) {
+		if node.IsObject() {
+			node.ForEach(func(key, value gjson.Result) bool {
+				newKey := key.String()
+				if prefix != "" {
+					newKey = prefix + "." + newKey
+				}
+				walk(newKey, value)
+				return true // continue iteration
+			})
+		} else if node.IsArray() {
+			node.ForEach(func(key, value gjson.Result) bool {
+				newKey := key.String() // key is the index here "0", "1"...
+				if prefix != "" {
+					newKey = prefix + "." + newKey
+				}
+				walk(newKey, value)
+				return true
+			})
+		} else {
+			// It's a leaf value (String, Number, Bool, Null)
+			// node.Value() returns the native Go type
+			result[prefix] = node.Value()
+		}
+	}
+
+	walk("", parsed)
+	return result
+}
+
+func (j JSON) Time(path string) time.Time {
+	s := strings.TrimSpace(j.Text(path))
+
+	// Cut separates the seconds from the fractional part
+	lhs, rhs, hasFraction := strings.Cut(s, ".")
+
+	// 1. Try parsing the integer part (Seconds)
+	sec, err := strconv.ParseInt(lhs, 10, 64)
+	if err != nil {
+		// If parsing fails, fallback to standard JSON/Time decoding (e.g. ISO8601)
+		var t time.Time
+		j.Select(path).To(&t)
+		return t
+	}
+
+	// 2. Parse the fractional part (Nanoseconds)
+	var nsc int64
+	if hasFraction {
+		// Normalize length to 9 digits for nanoseconds
+		if len(rhs) > 9 {
+			rhs = rhs[:9]
+		} else {
+			rhs += strings.Repeat("0", 9-len(rhs))
+		}
+
+		// If the fractional part isn't numeric, we return zero time (matching original logic)
+		if nsc, err = strconv.ParseInt(rhs, 10, 64); err != nil {
+			return time.Time{}
+		}
+	}
+
+	return time.Unix(sec, nsc).UTC()
+}
+
+func (j JSON) To(target any, fallback ...any) error {
+	// 1. Primary path: If data exists, unmarshal immediately.
+	if b := j.Select(); !b.IsEmpty() {
+		return json.Unmarshal(b, target)
+	}
+	// 2. If no data and no fallback, do nothing.
+	if len(fallback) == 0 {
+		return nil
+	}
+	// 3. Handle Fallback (using Reflection)
+	// We validate types first to ensure safety.
+	tv := reflect.ValueOf(target)
+	fv := reflect.ValueOf(fallback[0])
+	if tv.Kind() != reflect.Ptr || tv.IsNil() {
+		return fmt.Errorf("JSON: target must be a non-nil pointer")
+	}
+	if tv.Elem().Type() != fv.Type() {
+		return fmt.Errorf("JSON: target and fallback types do not match")
+	}
+	tv.Elem().Set(fv)
+	return nil
+}
+
+// IsEmpty checks if the JSON byte slice is empty or nil.
+// This usually happens when Select() fails to find a path.
+func (j JSON) IsEmpty() bool {
+	switch string(j) {
+	case "", "null", "[]", "{}":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsObject checks if the current JSON node represents a JSON object {...}.
+func (j JSON) IsObject() bool {
+	if j.IsEmpty() {
+		return false
+	}
+	return gjson.ParseBytes(j).IsObject()
+}
+
+// IsArray checks if the current JSON node represents a JSON array [...].
+func (j JSON) IsArray() bool {
+	if j.IsEmpty() {
+		return false
+	}
+	return gjson.ParseBytes(j).IsArray()
+}
+
+// IsNumber checks if the current JSON node represents a number.
+func (j JSON) IsNumber() bool {
+	if j.IsEmpty() {
+		return false
+	}
+	return gjson.ParseBytes(j).Type == gjson.Number
+}
+
+// IsNull checks if the current JSON node is a literal JSON 'null'.
+func (j JSON) IsNull() bool {
+	return gjson.ParseBytes(j).Type == gjson.Null
+}
+
+// Text returns the string value at the specified path.
+// It converts numbers/booleans to their string representation if necessary.
+func (j JSON) Text(path string) string {
+	return gjson.GetBytes(j, path).String()
+}
+
+// Number returns the float64 value at the specified path.
+// It returns 0 if the path does not exist or is not a number.
+func (j JSON) Number(path string) float64 {
+	return gjson.GetBytes(j, path).Float()
+}
+
+// Bool returns the boolean value at the specified path.
+// It returns false if the path does not exist.
+func (j JSON) Bool(path string) bool {
+	return gjson.GetBytes(j, path).Bool()
+}
+
+// String implements the fmt.Stringer interface for pretty printing.
+func (j JSON) String() string {
+	if j == nil {
+		return "<nil>"
+	}
+	return string(j)
+}
+
+// Sprintf formats a string using values extracted from the JSON at the specified paths.
+//
+// Unlike Readf (which works on raw JSON bytes), Sprintf converts JSON values to
+// native Go types (float64, string, bool, nil) before formatting.
+// This allows standard fmt verbs like %s, %d, %.2f to work as expected.
+//
+// Example: j.Sprintf("User %s has ID %d", "user.name", "user.id")
+func (j JSON) Sprintf(format string, paths ...string) string {
+	args := make([]any, len(paths))
+	for i, path := range paths {
+		args[i] = gjson.GetBytes(j, path).Value()
+	}
+	return fmt.Sprintf(format, args...)
+}
+
+// Each is an iterator compatible with Go 1.23+ (iter.Seq2[string, JSON]).
+// It iterates over Key-Value pairs (for Objects) or Index-Value pairs (for Arrays).
+//
+// Usage:
+//
+//	for key, val := range doc.Select("config").All {
+//	    fmt.Printf("Key: %s, Val: %s\n", key, val)
+//	}
+func (j JSON) Each(yield func(JSON, string) bool) {
+	if j.IsEmpty() {
+		return
+	}
+	gjson.ParseBytes(j).ForEach(func(key, value gjson.Result) bool {
+		k := key.String() // Dla tablicy będzie to "0", "1", itd.
+		v := JSON(value.Raw)
+		return yield(v, k)
+	})
+}
+
+// UnmarshalJSON ...
+func (j *JSON) UnmarshalJSON(data []byte) error {
+	if j == nil {
+		return fmt.Errorf("json: UnmarshalJSON on nil pointer")
+	}
+	*j = append((*j)[0:0], data...)
+	return nil
+}
+
+// MarshalJSON ...
+func (j JSON) MarshalJSON() ([]byte, error) {
+	if j == nil {
+		return []byte("null"), nil
+	}
+	return j, nil
+}
+
+// Meta converts JSON to Meta type (map[string]any).
+// Returns empty Meta if JSON is empty or conversion fails.
+func (j JSON) Meta() Meta {
+	if j.IsEmpty() {
+		return Meta{}
+	}
+	var m Meta
+	if err := json.Unmarshal(j, &m); err != nil {
+		return Meta{}
 	}
 	return m
 }
 
-// ReadFirst returns the first non-empty string from the given keys.
-func (m JSON) ReadFirst(keys ...string) string {
-	for _, k := range keys {
-		if v := strings.TrimSpace(m.Text(k)); v != "" {
-			return v
-		}
-	}
-	return ""
-}
+//var ErrJSON = app.Errorf("json")
 
-func (m JSON) MarshalJSON() ([]byte, error) {
-	if s, ok := m[":string:"]; ok {
-		return json.Marshal(s)
-	}
-	if f, ok := m[":number:"]; ok {
-		return json.Marshal(f)
-	}
-	if b, ok := m[":bool:"]; ok {
-		return json.Marshal(b)
-	}
-	if a, ok := m[":array:"]; ok {
-		return json.Marshal(a)
-	}
-	if m == nil {
-		return []byte("null"), nil
-	}
-	return json.Marshal(map[string]any(m))
-}
+type Meta map[string]any
 
-func (m *JSON) UnmarshalJSON(b []byte) (err error) {
-	*m, err = NewJSON(b)
-	return err
-}
-
-func (m JSON) String() string {
-	if m[":number:"] != nil {
-		return fmt.Sprintf("%v", m[":number:"])
-	}
-	if m[":string:"] != nil {
-		return fmt.Sprintf("%v", m[":string:"])
-	}
+func (m Meta) String() string {
 	b, _ := json.MarshalIndent(m, "", "\t")
 	return fmt.Sprintf("%s\n", b)
 }
 
-func (m JSON) IsEmpty() bool {
-	switch v := reflect.ValueOf(m.value()); v.Kind() {
-	case reflect.String:
-		return v.Len() == 0
-	case reflect.Array, reflect.Slice, reflect.Map, reflect.Chan:
-		return v.Len() == 0
-	case reflect.Ptr, reflect.Interface:
-		return v.IsNil()
-	case reflect.Bool:
-		return !v.Bool()
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return v.Int() == 0
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return v.Uint() == 0
-	case reflect.Float32, reflect.Float64:
-		return v.Float() == 0
-	default:
-		return false // assume non-empty for unknown types
+func (m Meta) IsEmpty() bool {
+	return len(m) == 0
+}
+
+func (m Meta) JSON(path ...string) JSON {
+	var b JSON
+	b, _ = json.Marshal(m)
+	if len(path) > 0 {
+		b = b.Select(path...)
 	}
+	return b
 }
 
-func (m JSON) IsString() bool {
-	_, ok := m[":string:"]
-	return ok
-}
-
-func (m JSON) IsNumber() bool {
-	_, ok := m[":number:"]
-	return ok
-}
-
-func (m JSON) IsArray() bool {
-	_, ok := m[":array:"]
-	return ok
-}
-
-func (m JSON) value() any {
-	for _, n := range []string{":string:", ":number:", ":bool:", ":array:"} {
-		if v, ok := m[n]; ok {
-			return v
-		}
-	}
-	return m
-}
-
-func (m JSON) Error() error {
-	if s, ok := m[":error:"].(string); ok {
-		return Errorf(s, "")
-	}
+func (m Meta) To() any {
 	return nil
-}
-
-func (m JSON) Each(fn func(JSON) bool) {
-	if v, ok := m[":string:"]; ok {
-		fn(JSON{":string:": v})
-		return
-	}
-	a, ok := m[":array:"]
-	if !ok {
-		return
-	}
-	if x, ok := a.([]any); ok {
-		for i, v := range x {
-			v, ok := v.(map[string]any)
-			if !ok {
-				if !fn(JSON{":string:": x[i]}) {
-					return
-				}
-				continue
-			}
-			if !fn(v) {
-				return
-			}
-		}
-	}
-	return
-}
-
-func (m JSON) report(err error) JSON {
-	m[":error:"] = err.Error()
-	return m
 }

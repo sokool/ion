@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"ion"
+	"github.com/sokool/ion"
 )
 
 func TestNewDomainPanic(t *testing.T) {
