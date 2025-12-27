@@ -164,21 +164,28 @@ func (a *API) Header(name, value string, args ...any) *API {
 // The token is cached internally and reused for the duration specified
 // in the `expires_in` field of the response. Once expired, a new token
 // will be fetched automatically.
-func (a *API) OAuth(url string, params ...string) *API {
+func (a *API) OAuth(host string, params ...Meta) *API {
 	a.Authorization = func(req *http.Request) (string, time.Time, error) {
 		n := time.Now()
-		p := append(params,
-			"grant_type=client_credentials",
-			"client_id="+a.URL.Username(),
-			"client_secret="+a.URL.Password(),
-		)
-		j, err := NewEndpoint[string, JSON](url).
+
+		u := url.Values{}
+		u.Set("grant_type", "client_credentials")
+		u.Set("client_id", a.URL.Username())
+		u.Set("client_secret", a.URL.Password())
+
+		for i := range params {
+			for key, value := range params[i] {
+				u.Set(key, fmt.Sprintf("%v", value))
+			}
+		}
+
+		j, err := NewEndpoint[string, JSON](host).
 			Name(a.Name).
 			Lock(true).
 			Header("Content-Type", "application/x-www-form-urlencoded").
 			Header("Authorization", a.URL.BasicAuth()).
 			Errors(a.Errors).
-			Post(strings.Join(p, "&"))
+			Post(u.Encode())
 		if err != nil {
 			return "", n, err
 		}
