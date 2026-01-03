@@ -198,9 +198,7 @@ func (a *API) OAuth(host string, params ...Meta) *API {
 func (a *API) run(r *http.Request) (*http.Response, error) {
 	a.mu.Lock()
 	if a.client == nil {
-		a.client = &http.Client{
-			Timeout: 45 * time.Second,
-		}
+		a.client = &http.Client{}
 		if a.Proxy != "" {
 			pu, _ := url.Parse(a.Proxy)
 			a.client.Transport = &http.Transport{Proxy: http.ProxyURL(pu)}
