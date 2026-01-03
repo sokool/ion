@@ -3,6 +3,7 @@ package ion
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -231,18 +232,12 @@ func (c *LLM) api() (*API, string, error) {
 	if err != nil {
 		return nil, vendor, err
 	}
-	def := Meta{}
 	if c.Model == "" {
 		c.Model = api.URL.Query("model")
-		def["model"] = c.Model
 
 	}
-	if strings.HasPrefix(c.Model, "gpt-5") && c.Temperature != 1 {
-		c.Temperature = 1
-		def["temperature"] = c.Temperature
-	}
-	if !def.IsEmpty() {
-		log_.Debugf(vendor+":default config applied %v", def)
+	if n := api.URL.Query("temperature"); n != "" && c.Temperature == 0 {
+		c.Temperature, _ = strconv.ParseFloat(n, 32)
 	}
 	api.Name = vendor
 	return api, vendor, nil
