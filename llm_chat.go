@@ -12,7 +12,7 @@ type LLMChat struct {
 	ID          string
 	Name        string
 	Prompt      string
-	Completion  LLMCompletion
+	Completion  LLM
 	Messages    []Message
 	Uncommitted []Message
 	Muted       bool
@@ -28,11 +28,11 @@ func ReadLLMChat(id, name string) (*LLMChat, error) {
 	return &c, nil
 }
 
-func NewLLMChat(prompt string, t ...LLMTool) *LLMChat {
+func NewLLMChat(prompt string, t ...Tool) *LLMChat {
 	return &LLMChat{
 		ID:     UUID(),
 		Prompt: prompt,
-		Completion: LLMCompletion{
+		Completion: LLM{
 			Tool: t,
 		},
 	}
@@ -70,7 +70,7 @@ func (c *LLMChat) Complete(ctx context.Context, m ...Message) ([]Message, error)
 		c.Messages = c.Uncommitted
 		return nil, c.store()
 	}
-	o, err := c.Completion.Complete(ctx, c.Uncommitted...)
+	o, err := c.Completion.Response(ctx, c.Uncommitted...)
 	if err != nil {
 		return nil, err
 	}

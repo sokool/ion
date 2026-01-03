@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// LLMCompletion represents a configuration structure for generating text via an LLM API.
+// LLM represents a configuration structure for generating text via an LLM API.
 
-type LLMCompletion struct {
+type LLM struct {
 	// Model specifies the language model to use for text generation.
 	Model string
 	// Cache defines the cache duration, it will store response in local storage (memory/redis/etc)
@@ -18,12 +18,16 @@ type LLMCompletion struct {
 	// Temperature controls the randomness of the generated output.
 	Temperature float64
 	// Tools provides functions and schemas for tool-based completions.
-	Tool []LLMTool
-
+	Tool []Tool
+	// Instruction base information for llm model like a role, or style etc...
+	Instruction string
+	// Persistent keep each message in storage
+	Persistent bool
+	// Options
 	Options Meta
 }
 
-func (c *LLMCompletion) Complete(ctx context.Context, m ...Message) ([]Message, error) {
+func (c *LLM) Response(ctx context.Context, m ...Message) ([]Message, error) {
 	api, vendor, err := c.api()
 	if err != nil {
 		return nil, ErrCompletion.Wrap(err)
@@ -39,8 +43,8 @@ func (c *LLMCompletion) Complete(ctx context.Context, m ...Message) ([]Message, 
 
 }
 
-func (c *LLMCompletion) Read(message string) (string, error) {
-	m, err := c.Complete(ctx, Message{Role: "user", Content: message})
+func (c *LLM) Read(message string) (string, error) {
+	m, err := c.Response(ctx, Message{Role: "user", Content: message})
 	if err != nil {
 		return "", err
 	}
@@ -50,8 +54,8 @@ func (c *LLMCompletion) Read(message string) (string, error) {
 	return "", nil
 }
 
-func (c *LLMCompletion) MDTool(markdown string, fn Function) error {
-	t, err := NewLLMToolMD(markdown, fn)
+func (c *LLM) MDTool(markdown string, fn Function) error {
+	t, err := NewToolMD(markdown, fn)
 	if err != nil {
 		return err
 	}
@@ -59,7 +63,7 @@ func (c *LLMCompletion) MDTool(markdown string, fn Function) error {
 	return nil
 }
 
-func (c *LLMCompletion) Option(name string, value any) *LLMCompletion {
+func (c *LLM) Option(name string, value any) *LLM {
 	if c.Options == nil {
 		c.Options = Meta{}
 	}
@@ -67,7 +71,7 @@ func (c *LLMCompletion) Option(name string, value any) *LLMCompletion {
 	return c
 }
 
-func (c *LLMCompletion) gemini(ctx context.Context, api *API, m ...Message) ([]Message, error) {
+func (c *LLM) gemini(ctx context.Context, api *API, m ...Message) ([]Message, error) {
 	var tools []Meta
 	for i := range c.Tool {
 		tools = append(tools, c.Tool[i].Schemas...)
@@ -166,7 +170,7 @@ func (c *LLMCompletion) gemini(ctx context.Context, api *API, m ...Message) ([]M
 	return m, nil
 }
 
-func (c *LLMCompletion) chatGPT(ctx context.Context, api *API, msg ...Message) ([]Message, error) {
+func (c *LLM) chatGPT(ctx context.Context, api *API, msg ...Message) ([]Message, error) {
 	var tools []Meta
 	for i := range c.Tool {
 		tools = append(tools, c.Tool[i].Schemas...)
@@ -199,11 +203,11 @@ func (c *LLMCompletion) chatGPT(ctx context.Context, api *API, msg ...Message) (
 	if err != nil {
 		return nil, ErrCompletion.Wrap(err)
 	}
-	if s := res.Text("choices[0].message.content"); s != "" {
-		msg = append(msg, Message{Role: res.Text("choices[0].message.role"), Content: s})
+	if s := res.Text("choices.0.message.content"); s != "" {
+		msg = append(msg, Message{Role: res.Text("choices.0.message.role"), Content: s})
 	}
 
-	for fcs := range res.Select("choices[0].message.tool_calls").Each {
+	for fcs := range res.Select("choices.0.message.tool_calls").Each {
 		fid := fcs.Text("id")
 		fnn := fcs.Text("function.name")
 		fna := fcs.Select("function.arguments").Meta()
@@ -218,7 +222,7 @@ func (c *LLMCompletion) chatGPT(ctx context.Context, api *API, msg ...Message) (
 	return msg, nil
 }
 
-func (c *LLMCompletion) api() (*API, string, error) {
+func (c *LLM) api() (*API, string, error) {
 	vendor := "ChatGPT"
 	if strings.HasPrefix(c.Model, "gemini") {
 		vendor = "Gemini"
@@ -244,7 +248,7 @@ func (c *LLMCompletion) api() (*API, string, error) {
 	return api, vendor, nil
 }
 
-func (c *LLMCompletion) tool(ctx context.Context, msg []Message, id, name string, data JSON) ([]Message, error) {
+func (c *LLM) tool(ctx context.Context, msg []Message, id, name string, data JSON) ([]Message, error) {
 	if name == "" {
 		return msg, nil
 	}
@@ -256,7 +260,7 @@ func (c *LLMCompletion) tool(ctx context.Context, msg []Message, id, name string
 		msg = append(msg, Message{ID: id, Name: name, Role: "function", Content: res})
 		// If a tool responds and the result is dispatchable, call the LLM again.
 		if dispatch {
-			return c.Complete(ctx, msg...)
+			return c.Response(ctx, msg...)
 		}
 	}
 	return msg, nil
