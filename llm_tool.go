@@ -44,7 +44,7 @@ func NewTool[T any](name, desc string, fn func(T) (string, bool)) (Tool, error) 
 		return Tool{}, err
 	}
 	j := JSON(b)
-	for _, n = range j.Select("definitions").Each {
+	for _, n = range j.Each("definitions") {
 		break
 	}
 	if n == "" {

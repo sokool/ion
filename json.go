@@ -322,23 +322,29 @@ func (j JSON) Sprintf(format string, paths ...string) string {
 	return fmt.Sprintf(format, args...)
 }
 
-// Each is an iterator compatible with Go 1.23+ (iter.Seq2[string, JSON]).
-// It iterates over Key-Value pairs (for Objects) or Index-Value pairs (for Arrays).
+// Each returns a function that iterates over key-value pairs (for objects) or index-value pairs (for arrays).
+// If paths are provided, it will first select a sub-JSON and then iterate over it.
 //
 // Usage:
 //
-//	for key, val := range doc.Select("config").All {
-//	    fmt.Printf("Key: %s, Val: %s\n", key, val)
-//	}
-func (j JSON) Each(yield func(JSON, string) bool) {
-	if j.IsEmpty() {
-		return
+//	iterator := doc.Each("users")
+//	iterator(func(user JSON, id string) bool {
+//		fmt.Printf("ID: %s, User: %s\n", id, user)
+//		return true // continue iteration
+//	})
+func (j JSON) Each(paths ...string) Iterator[JSON, string] {
+	data := j
+	if len(paths) > 0 {
+		data = j.Select(paths...)
 	}
-	gjson.ParseBytes(j).ForEach(func(key, value gjson.Result) bool {
-		k := key.String() // Dla tablicy będzie to "0", "1", itd.
-		v := JSON(value.Raw)
-		return yield(v, k)
-	})
+	return func(yield func(JSON, string) bool) {
+		if data.IsEmpty() {
+			return
+		}
+		gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+			return yield(JSON(value.Raw), key.String())
+		})
+	}
 }
 
 // UnmarshalJSON ...

@@ -2,6 +2,7 @@ package ion_test
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	. "github.com/sokool/ion"
@@ -118,91 +119,67 @@ func TestJSON(t *testing.T) {
 	}
 }
 
-func TestJSON_All(t *testing.T) {
-	slice := []byte(`[{"name": "Tom", "age": 32},{"name": "Jerry", "age": 30},
-			    {"name": "Spike", "age": 40},{"name": "Tyke", "age": 20}]`)
+func TestJSON_Each(t *testing.T) {
+	cases := []struct {
+		name           string
+		json           JSON
+		path           []string
+		expectedKeys   []string
+		expectedValues []JSON
+	}{
+		{
+			name:           "each on root object",
+			json:           JSON(`{"users":[{"name":"John","age":30},{"name":"Jane","age":25}],"meta":{"count":2}}`),
+			expectedKeys:   []string{"users", "meta"},
+			expectedValues: []JSON{JSON(`[{"name":"John","age":30},{"name":"Jane","age":25}]`), JSON(`{"count":2}`)},
+		},
+		{
+			name:           "each on nested array",
+			json:           JSON(`{"users":[{"name":"John","age":30},{"name":"Jane","age":25}]}`),
+			path:           []string{"users"},
+			expectedKeys:   []string{"0", "1"},
+			expectedValues: []JSON{JSON(`{"name":"John","age":30}`), JSON(`{"name":"Jane","age":25}`)},
+		},
+		{
+			name:           "each on array",
+			json:           JSON(`[{"name":"Tom"},{"name":"Jerry"}]`),
+			expectedKeys:   []string{"0", "1"},
+			expectedValues: []JSON{JSON(`{"name":"Tom"}`), JSON(`{"name":"Jerry"}`)}},
+		{
+			name: "each on empty object",
+			json: JSON(`{}`),
+		},
+		{
+			name: "each on empty array",
+			json: JSON(`[]`),
+		},
+		{
+			name: "each on non-existent path",
+			json: JSON(`{"a": 1}`),
+			path: []string{"b"},
+		},
+	}
 
-	var m JSON
-	if err := m.UnmarshalJSON(slice); err != nil {
-		t.Fatal(err)
-	}
-	var ss []string
-	if err := m.Select("[*].name").To(&ss); err != nil || fmt.Sprintf("%v", ss) != "[Tom Jerry Spike Tyke]" {
-		t.Fatalf("expected nil, got %v error and %s string", err, ss)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var keys []string
+			var values []JSON
 
-	var s string
-	for n := range m.Each {
-		s += n.Text("name")
-	}
-	if s != "TomJerrySpikeTyke" {
-		t.Fatalf("expected TomJerrySpikeTyke, got %s", s)
+			for v, k := range tc.json.Each(tc.path...) {
+				keys = append(keys, k)
+				values = append(values, v)
+			}
+
+			if !reflect.DeepEqual(keys, tc.expectedKeys) {
+				t.Fatalf("expected keys %v, got %v", tc.expectedKeys, keys)
+			}
+
+			if !reflect.DeepEqual(values, tc.expectedValues) {
+				t.Fatalf("expected values %v, got %v", tc.expectedValues, values)
+			}
+		})
 	}
 }
-
-//func TestNewJSON(t *testing.T) {
-//
-//	tests := []struct {
-//		name    string
-//		input   []byte
-//		want    any
-//		wantErr bool
-//	}{
-//		{
-//			name:  "empty object",
-//			input: []byte(`{}`),
-//			want:  Meta{},
-//		},
-//		{
-//			name:  "simple object",
-//			input: []byte(`{"name":"John","age":30}`),
-//			want:  Meta{"name": "John", "age": float64(30)},
-//		},
-//		{
-//			name:  "nested object",
-//			input: []byte(`{"user":{"name":"John","age":30}}`),
-//			want:  Meta{"user": JSON{"name": "John", "age": 30}},
-//		},
-//		{
-//			name:  "array",
-//			input: []byte(`["a","b","c"]`),
-//			want:  Meta{":array:": []any{"a", "b", "c"}},
-//		},
-//		{
-//			name:    "invalid json",
-//			input:   []byte(`{"name":"John"`),
-//			wantErr: true,
-//		},
-//		{
-//			name:    "empty input",
-//			input:   []byte{},
-//			wantErr: true,
-//		},
-//		{
-//			name:  "string value",
-//			input: []byte(`"hello"`),
-//			want:  "hello",
-//		},
-//		{
-//			name:  "string value without quotes",
-//			input: []byte(`hello`),
-//			want:  "hello",
-//		},
-//	}
-//
-//	for _, tt := range tests {
-//		t.Run(tt.name, func(t *testing.T) {
-//			got, err := NewJSON(tt.input)
-//			if (err != nil) != tt.wantErr {
-//				t.Errorf("NewJSON() error = %v, wantErr %v", err, tt.wantErr)
-//				return
-//			}
-//			if !tt.wantErr && fmt.Sprint(got) != fmt.Sprint(tt.want) {
-//				t.Errorf("NewJSON() = %v, want %v", got, tt.want)
-//			}
-//		})
-//	}
-//}
 
 //func TestJSON_Join(t *testing.T) {
 //	fragmentsJSON := []string{
@@ -221,12 +198,28 @@ func TestJSON_All(t *testing.T) {
 //	var fragments []JSON
 //	for _, s := range fragmentsJSON {
 //		var m JSON
-//		_ = json.Unmarshal([]byte(s), &m)
+//		if err := json.Unmarshal([]byte(s), &m); err != nil {
+//			t.Fatalf("unmarshaling fragment: %v", err)
+//		}
 //		fragments = append(fragments, m)
 //	}
 //
-//	j := JSON{}
-//	j.Join(fragments...)
+//	j := JSON("{}")
+//	if err := j.Join(fragments...); err != nil {
+//		t.Fatal(err)
+//	}
 //
-//	fmt.Println(j)
+//	expected := `{"function":{"arguments":{"EmailAddress":"m@rian.pl"},"name":"StoreEmail"},"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R","index":0,"type":"function"}`
+//
+//	var expectedJSON, actualJSON map[string]interface{}
+//	if err := json.Unmarshal([]byte(expected), &expectedJSON); err != nil {
+//		t.Fatalf("unmarshaling expected json: %v", err)
+//	}
+//	if err := json.Unmarshal(j, &actualJSON); err != nil {
+//		t.Fatalf("unmarshaling actual json: %v", err)
+//	}
+//
+//	if !reflect.DeepEqual(expectedJSON, actualJSON) {
+//		t.Fatalf("expected %s, got %s", expected, j.String())
+//	}
 //}

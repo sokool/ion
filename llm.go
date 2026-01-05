@@ -149,13 +149,13 @@ func (c *LLM) gemini(ctx context.Context, api *API, m ...Message) ([]Message, er
 	if err != nil {
 		return nil, ErrCompletion.Wrap(err)
 	}
-	for cds := range res.Select("candidates").Each {
+	for cds := range res.Each("candidates") {
 		rol := cds.Text("content.role")
 		switch rol {
 		case "model":
 			rol = "assistant"
 		}
-		for p := range cds.Select("content.parts").Each {
+		for p := range cds.Each("content.parts") {
 			fnn := p.Text("functionCall.name")
 			fna := p.Select("functionCall.args")
 			txt := p.Text("text")
@@ -208,7 +208,7 @@ func (c *LLM) chatGPT(ctx context.Context, api *API, msg ...Message) ([]Message,
 		msg = append(msg, Message{Role: res.Text("choices.0.message.role"), Content: s})
 	}
 
-	for fcs := range res.Select("choices.0.message.tool_calls").Each {
+	for fcs := range res.Each("choices.0.message.tool_calls") {
 		fid := fcs.Text("id")
 		fnn := fcs.Text("function.name")
 		fna := fcs.Select("function.arguments").Meta()
