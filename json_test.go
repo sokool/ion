@@ -273,7 +273,12 @@ func TestJSON_Merge(t *testing.T) {
 		},
 		{
 			name: "complex string concatenation into json object",
-			base: `{"function":{"arguments":"","name":"StoreEmail"},"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R","index":0,"type":"function"}`,
+			base: `{
+				"function":{"arguments":"","name":"StoreEmail"},
+				"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R",
+				"index":0,
+				"type":"function"
+			}`,
 			fragments: []string{
 				`{"function":{"arguments":"{\""},"index":0}`,
 				`{"function":{"arguments":"Email"},"index":0}`,
@@ -291,16 +296,16 @@ func TestJSON_Merge(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			output, fragments := make(JSON, len(tc.base)), make([]JSON, len(tc.fragments))
-			copy(output, tc.base)
+			data, fragments := make(JSON, len(tc.base)), make([]JSON, len(tc.fragments))
+			copy(data, tc.base)
 			for k, v := range tc.fragments {
 				fragments[k] = JSON(v)
 			}
-			if err := output.Merge(fragments...); err != nil {
+			if err := data.Merge(fragments...); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !bytes.Equal(output, JSON(tc.expected)) {
-				t.Fatalf("expected:\n%s\n\ngot:\n%s", tc.expected, output)
+			if !bytes.Equal(data, JSON(tc.expected)) {
+				t.Fatalf("expected:\n%s\n\ngot:\n%s", tc.expected, data)
 			}
 		})
 	}
