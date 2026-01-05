@@ -327,11 +327,9 @@ func (j JSON) Sprintf(format string, paths ...string) string {
 //
 // Usage:
 //
-//	iterator := doc.Each("users")
-//	iterator(func(user JSON, id string) bool {
+//	for user, id := range doc.Each("users") {
 //		fmt.Printf("ID: %s, User: %s\n", id, user)
-//		return true // continue iteration
-//	})
+//	}
 func (j JSON) Each(paths ...string) Iterator[JSON, string] {
 	data := j
 	if len(paths) > 0 {
@@ -377,7 +375,89 @@ func (j JSON) Meta() Meta {
 	return m
 }
 
-//var ErrJSON = app.Errorf("json")
+// Merge recursively merges JSON fragments into the receiver.
+//
+// This method deeply combines JSON objects. When keys conflict, the behavior is as follows:
+// - If both values are objects, they are merged recursively.
+// - If the base value is an object and the new value is not, the base object is kept.
+// - If both values are strings, they are concatenated.
+// - In all other cases, the new value overwrites the base value.
+//
+// The receiver `j` is modified in place.
+func (j *JSON) Merge(fragments ...JSON) error {
+	var base map[string]any
+	if err := json.Unmarshal(*j, &base); err != nil {
+		// If the receiver isn't a valid JSON object, start with an empty one.
+		base = make(map[string]any)
+	}
+
+	for _, fragment := range fragments {
+		var fragMap map[string]any
+		if err := json.Unmarshal(fragment, &fragMap); err != nil {
+			// Skip fragments that are not valid JSON objects.
+			continue
+		}
+		base = j.mergeMaps(base, fragMap)
+	}
+
+	result, err := json.Marshal(base)
+	if err != nil {
+		return err
+	}
+	*j = result
+	return nil
+}
+
+// mergeMaps recursively merges the overlay map into the base map.
+func (j *JSON) mergeMaps(base, overlay map[string]any) map[string]any {
+	if base == nil {
+		return overlay
+	}
+	if overlay == nil {
+		return base
+	}
+
+	for key, overlayValue := range overlay {
+		baseValue, exists := base[key]
+		if !exists {
+			base[key] = overlayValue
+			continue
+		}
+
+		baseMap, baseIsMap := baseValue.(map[string]any)
+		overlayMap, overlayIsMap := overlayValue.(map[string]any)
+
+		if baseIsMap && overlayIsMap {
+			// Both are maps: recursively merge.
+			base[key] = j.mergeMaps(baseMap, overlayMap)
+			continue
+		}
+
+		if baseIsMap {
+			// Base is a map, but overlay is not: keep the base map.
+			continue
+		}
+
+		baseStr, baseIsStr := baseValue.(string)
+		overlayStr, overlayIsStr := overlayValue.(string)
+		if baseIsStr && overlayIsStr {
+			// Both are strings: concatenate them.
+			// This is a special behavior from the original implementation.
+			concatenated := baseStr + overlayStr
+			var jsonVal interface{}
+			if err := json.Unmarshal([]byte(concatenated), &jsonVal); err == nil {
+				base[key] = jsonVal
+			} else {
+				base[key] = concatenated
+			}
+			continue
+		}
+
+		// Default case: overwrite base with overlay value.
+		base[key] = overlayValue
+	}
+	return base
+}
 
 type Meta map[string]any
 

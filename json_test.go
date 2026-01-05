@@ -1,6 +1,7 @@
 package ion_test
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"testing"
@@ -181,45 +182,126 @@ func TestJSON_Each(t *testing.T) {
 	}
 }
 
-//func TestJSON_Join(t *testing.T) {
-//	fragmentsJSON := []string{
-//		`{"function":{"arguments":"","name":"StoreEmail"},"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R","index":0,"type":"function"}`,
-//		`{"function":{"arguments":"{\""},"index":0}`,
-//		`{"function":{"arguments":"Email"},"index":0}`,
-//		`{"function":{"arguments":"Address"},"index":0}`,
-//		`{"function":{"arguments":"\\\":\\\""},"index":0}`,
-//		`{"function":{"arguments":"m"},"index":0}`,
-//		`{"function":{"arguments":"@"},"index":0}`,
-//		`{"function":{"arguments":"rian"},"index":0}`,
-//		`{"function":{"arguments":".pl"},"index":0}`,
-//		`{"function":{"arguments":"\\\"}"},"index":0}`,
-//	}
-//
-//	var fragments []JSON
-//	for _, s := range fragmentsJSON {
-//		var m JSON
-//		if err := json.Unmarshal([]byte(s), &m); err != nil {
-//			t.Fatalf("unmarshaling fragment: %v", err)
-//		}
-//		fragments = append(fragments, m)
-//	}
-//
-//	j := JSON("{}")
-//	if err := j.Join(fragments...); err != nil {
-//		t.Fatal(err)
-//	}
-//
-//	expected := `{"function":{"arguments":{"EmailAddress":"m@rian.pl"},"name":"StoreEmail"},"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R","index":0,"type":"function"}`
-//
-//	var expectedJSON, actualJSON map[string]interface{}
-//	if err := json.Unmarshal([]byte(expected), &expectedJSON); err != nil {
-//		t.Fatalf("unmarshaling expected json: %v", err)
-//	}
-//	if err := json.Unmarshal(j, &actualJSON); err != nil {
-//		t.Fatalf("unmarshaling actual json: %v", err)
-//	}
-//
-//	if !reflect.DeepEqual(expectedJSON, actualJSON) {
-//		t.Fatalf("expected %s, got %s", expected, j.String())
-//	}
-//}
+func TestJSON_Merge(t *testing.T) {
+	testCases := []struct {
+		name      string
+		base      string
+		fragments []string
+		expected  string
+	}{
+		{
+			name: "overwrite number and boolean",
+			base: `{"id":1,"active":false}`,
+			fragments: []string{
+				`{"id":2,"active":true,"new":true}`,
+			},
+			expected: `{"active":true,"id":2,"new":true}`,
+		},
+		{
+			name: "concatenate strings",
+			base: `{"message":"hello"}`,
+			fragments: []string{
+				`{"message":" world"}`,
+			},
+			expected: `{"message":"hello world"}`,
+		},
+		{
+			name: "concatenate strings into valid json",
+			base: `{"data":"{\"key\":"}`,
+			fragments: []string{
+				`{"data":"\"value\"}"}`,
+			},
+			expected: `{"data":{"key":"value"}}`,
+		},
+		{
+			name: "recursively merge objects",
+			base: `{"user":{"name":"John","details":{"age":30}}}`,
+			fragments: []string{
+				`{"user":{"details":{"city":"NY"}}}`,
+			},
+			expected: `{"user":{"details":{"age":30,"city":"NY"},"name":"John"}}`,
+		},
+		{
+			name: "overwrite array",
+			base: `{"items":[1,2]}`,
+			fragments: []string{
+				`{"items":[3,4,5]}`,
+			},
+			expected: `{"items":[3,4,5]}`,
+		},
+		{
+			name: "add new keys",
+			base: `{"a":1}`,
+			fragments: []string{
+				`{"b":2}`,
+			},
+			expected: `{"a":1,"b":2}`,
+		},
+		{
+			name: "merge into empty object",
+			base: `{}`,
+			fragments: []string{
+				`{"a":1}`,
+			},
+			expected: `{"a":1}`,
+		},
+		{
+			name: "merge multiple fragments",
+			base: `{"a":1}`,
+			fragments: []string{
+				`{"b":2}`,
+				`{"c":"hello"}`,
+				`{"a":99}`,
+			},
+			expected: `{"a":99,"b":2,"c":"hello"}`,
+		},
+		{
+			name: "keep object when fragment value is scalar",
+			base: `{"data":{"a":1}}`,
+			fragments: []string{
+				`{"data":"scalar"}`,
+			},
+			expected: `{"data":{"a":1}}`,
+		},
+		{
+			name: "overwrite scalar when fragment value is object",
+			base: `{"data":"scalar"}`,
+			fragments: []string{
+				`{"data":{"a":1}}`,
+			},
+			expected: `{"data":{"a":1}}`,
+		},
+		{
+			name: "complex string concatenation into json object",
+			base: `{"function":{"arguments":"","name":"StoreEmail"},"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R","index":0,"type":"function"}`,
+			fragments: []string{
+				`{"function":{"arguments":"{\""},"index":0}`,
+				`{"function":{"arguments":"Email"},"index":0}`,
+				`{"function":{"arguments":"Address"},"index":0}`,
+				`{"function":{"arguments":"\":\""},"index":0}`,
+				`{"function":{"arguments":"m"},"index":0}`,
+				`{"function":{"arguments":"@"},"index":0}`,
+				`{"function":{"arguments":"rian"},"index":0}`,
+				`{"function":{"arguments":".pl"},"index":0}`,
+				`{"function":{"arguments":"\"}"},"index":0}`,
+			},
+			expected: `{"function":{"arguments":{"EmailAddress":"m@rian.pl"},"name":"StoreEmail"},"id":"call_LfBdMvrLPu2iSJTuMTbR2w8R","index":0,"type":"function"}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			output, fragments := make(JSON, len(tc.base)), make([]JSON, len(tc.fragments))
+			copy(output, tc.base)
+			for k, v := range tc.fragments {
+				fragments[k] = JSON(v)
+			}
+			if err := output.Merge(fragments...); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !bytes.Equal(output, JSON(tc.expected)) {
+				t.Fatalf("expected:\n%s\n\ngot:\n%s", tc.expected, output)
+			}
+		})
+	}
+}
