@@ -12,51 +12,51 @@ import (
 	"github.com/alecthomas/jsonschema"
 )
 
-type LLMTool struct {
+type Tool struct {
 	Name string
-	// Execute is called when LLM decides to call it in LLMCompletion API
+	// Execute is called when LLM decides to call it in LLM API
 	// bool = true make llm call again with returned string
 	Execute func(JSON) (string, bool)
 	// Schemas represent function input json schema objects
 	Schemas []Meta
 }
 
-// NewLLMToolMD parses the provided markdown string to extract function definitions and
-// schemas, then returns a LLMTool configured with the given function handler.
+// NewToolMD parses the provided markdown string to extract function definitions and
+// schemas, then returns a Tool configured with the given function handler.
 // Parameters:
 //   - markdown: string containing markdown documentation with function definitions
 //   - fn: Function handler that will be called when this tool is invoked
-func NewLLMToolMD(markdown string, fn Function) (LLMTool, error) {
+func NewToolMD(markdown string, fn Function) (Tool, error) {
 	var err error
-	t := LLMTool{Execute: fn}
+	t := Tool{Execute: fn}
 	if t.Schemas, err = t.parseMD(markdown); err != nil {
 		return t, err
 	}
 	return t, nil
 }
 
-func NewLLMTool[T any](name, desc string, fn func(T) (string, bool)) (LLMTool, error) {
+func NewTool[T any](name, desc string, fn func(T) (string, bool)) (Tool, error) {
 	var v T
 	var n string
 
 	b, err := json.MarshalIndent((&jsonschema.Reflector{}).Reflect(v), "", "  ")
 	if err != nil {
-		return LLMTool{}, err
+		return Tool{}, err
 	}
 	j := JSON(b)
 	for _, n = range j.Select("definitions").Each {
 		break
 	}
 	if n == "" {
-		return LLMTool{}, ErrTool.New("invalid %s definition", v)
+		return Tool{}, ErrTool.New("invalid %s definition", v)
 	}
 
-	return LLMTool{
+	return Tool{
 		Name: name,
 		Execute: func(j JSON) (string, bool) {
 			var t T
 			if err := j.To(&t); err != nil {
-				log_.Errorf("LLMTool %s could not decode data to a %T type", name, t)
+				log_.Errorf("Tool %s could not decode data to a %T type", name, t)
 				return "", false
 			}
 			return fn(t)
@@ -74,15 +74,15 @@ func NewLLMTool[T any](name, desc string, fn func(T) (string, bool)) (LLMTool, e
 	}, nil
 }
 
-func MustLLMTool[T any](name, desc string, fn func(T) (string, bool)) LLMTool {
-	t, err := NewLLMTool(name, desc, fn)
+func MustLLMTool[T any](name, desc string, fn func(T) (string, bool)) Tool {
+	t, err := NewTool(name, desc, fn)
 	if err != nil {
 		panic(err)
 	}
 	return t
 }
 
-func (t LLMTool) HasName(n string) bool {
+func (t Tool) HasName(n string) bool {
 	if t.Name == n {
 		return true
 	}
@@ -94,16 +94,16 @@ func (t LLMTool) HasName(n string) bool {
 	return false
 }
 
-func (t LLMTool) MarshalJSON() ([]byte, error) {
+func (t Tool) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`{"Function":"%s", "Schemas": "%s"}`, reflect.TypeOf(t.Execute), t.Schemas)), nil
 }
 
-func (t *LLMTool) UnmarshalJSON(b []byte) error {
+func (t *Tool) UnmarshalJSON(b []byte) error {
 	// todo
 	return nil
 }
 
-func (t LLMTool) parseMD(s string) ([]Meta, error) {
+func (t Tool) parseMD(s string) ([]Meta, error) {
 	var scm []Meta
 	scn := bufio.NewScanner(strings.NewReader(s))
 	fni := 0
@@ -134,7 +134,7 @@ func (t LLMTool) parseMD(s string) ([]Meta, error) {
 	return scm, nil
 }
 
-func (t LLMTool) toJSONSchema(s string) (Meta, error) {
+func (t Tool) toJSONSchema(s string) (Meta, error) {
 	var (
 		re                             = regexp.MustCompile(`^(\w+)\s+(\S+)\s*-\s*(.*)$`)
 		lns                            = strings.Split(s, "\n")

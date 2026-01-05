@@ -224,3 +224,7 @@ func (t Text) Hash(prefix ...string) string {
 	}
 	return h
 }
+
+func (t Text) Generate(instructions ...string) (string, error) {
+	return (&LLM{Instruction: strings.Join(instructions, "\n")}).Read(string(t))
+}

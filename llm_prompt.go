@@ -39,7 +39,7 @@ func (p Prompt) Temperature(t float64) Prompt {
 	return r.Convert()
 }
 
-func (p Prompt) Completion() LLMCompletion {
+func (p Prompt) Completion() LLM {
 	return ParseLLMChat(p).Completion
 }
 
