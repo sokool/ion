@@ -11,6 +11,7 @@ import (
 // LLM represents a configuration structure for generating text via an LLM API.
 
 type LLM struct {
+	Name string
 	// Model specifies the language model to use for text generation.
 	Model string
 	// Cache defines the cache duration, it will store response in local storage (memory/redis/etc)
@@ -26,6 +27,18 @@ type LLM struct {
 	Persistent bool
 	// Options
 	Options Meta
+}
+
+// JSON takes the response from LLM strips Markdown JSON fences,
+// and returns the content as a JSON type.
+func (c *LLM) JSON(text string) (JSON, error) {
+	var t JSON
+	c.Instruction = fmt.Sprintf("Transform response to JSON format.\n\n%s", c.Instruction)
+	o, err := c.Read(text)
+	if err != nil {
+		return t, err
+	}
+	return JSON(strings.NewReplacer("```json", "", "```", "").Replace(o)), nil
 }
 
 func (c *LLM) Response(ctx context.Context, m ...Message) ([]Message, error) {
@@ -144,7 +157,7 @@ func (c *LLM) gemini(ctx context.Context, api *API, m ...Message) ([]Message, er
 	res, err := api.
 		Endpoint("/v1beta/models/%s:generateContent", c.Model).
 		Context(ctx).
-		Cache(c.Cache).
+		Cache(c.Cache, c.Name).
 		Post(req)
 	if err != nil {
 		return nil, ErrCompletion.Wrap(err)
@@ -178,6 +191,9 @@ func (c *LLM) chatGPT(ctx context.Context, api *API, msg ...Message) ([]Message,
 	}
 
 	var mm []Meta
+	if c.Instruction != "" {
+		mm = append(mm, Meta{"role": "system", "content": c.Instruction})
+	}
 	for _, m := range msg {
 		if _, ok := m.Meta["tool_calls"]; ok && m.Content == "" {
 			mm = append(mm, Meta{
@@ -189,13 +205,13 @@ func (c *LLM) chatGPT(ctx context.Context, api *API, msg ...Message) ([]Message,
 			continue
 		}
 
-		y := Meta{"role": m.Role, "content": m.Content, "userType": m.UserType}
+		y := Meta{"role": m.Role, "content": m.Content}
 		if m.Role == "function" {
 			y["role"], y["tool_call_id"] = "tool", m.ID
 		}
 		mm = append(mm, y)
 	}
-	res, err := api.Endpoint("/v1/chat/completions").Context(ctx).Cache(c.Cache).Post(Meta{
+	res, err := api.Endpoint("/v1/chat/completions").Context(ctx).Cache(c.Cache, c.Name).Post(Meta{
 		"model":       c.Model,
 		"tools":       tools,
 		"temperature": c.Temperature,
@@ -214,7 +230,7 @@ func (c *LLM) chatGPT(ctx context.Context, api *API, msg ...Message) ([]Message,
 		fna := fcs.Select("function.arguments").Meta()
 
 		fna["_method"], fna["_methodID"] = fnn, fid
-		msg = append(msg, Message{Role: "assistant", UserType: "llm", Meta: Meta{"tool_calls": fcs}})
+		msg = append(msg, Message{Role: "assistant", Meta: Meta{"tool_calls": fcs}})
 		if msg, err = c.tool(ctx, msg, fid, fnn, fna.JSON()); err != nil {
 			return nil, err
 		}
@@ -262,12 +278,11 @@ func (c *LLM) tool(ctx context.Context, msg []Message, id, name string, data JSO
 }
 
 type Message struct {
-	ID       string `json:"id,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Role     string `json:"role"`
-	UserType string `json:"userType,omitempty"`
-	Content  string `json:"content"`
-	Meta     Meta   `json:"meta"`
+	ID      string `json:"id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Meta    Meta   `json:"meta"`
 }
 
 var (
