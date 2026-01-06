@@ -156,9 +156,9 @@ func (s SQL[T]) scan(c context.Context, params any, to func(T) error) error {
 		return ErrSQL.Wrap(err)
 	}
 	m := time.Since(n).String()
-	//x := NewReflect[T]().Name()
-	x := "TODO"
-	log_.Trace(4).Debugf(x+": found %d in time of %s, based on %s", i, m, s)
+	var t T
+	x := NewReflect(t).Name()
+	log_.Trace(4).Debugf(x+": found %d in time of %s %v", i, m, params)
 	Metrics.Percentile("sql_read_in_seconds{name=%q}", time.Since(n).Seconds(), x)
 	return nil
 }
