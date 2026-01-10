@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // JSON represents raw JSON bytes.
@@ -134,6 +135,28 @@ func (j JSON) Read(pathTargets ...any) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Set updates the JSON at the specified path with the given value.
+// It modifies the receiver in place.
+//
+// Example:
+//
+//	j.Set("user.name", "Alice")
+//	j.Set("user.age", 30)
+func (j *JSON) Set(path string, value any) error {
+	if j == nil {
+		return fmt.Errorf("json: Set on nil pointer")
+	}
+
+	// sjson.SetBytes returns a new byte slice, so we must update *j
+	updated, err := sjson.SetBytes(*j, path, value)
+	if err != nil {
+		return err
+	}
+
+	*j = updated
+	return nil
 }
 
 // Flat flattens the entire JSON structure into a one-dimensional map.

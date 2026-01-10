@@ -3,6 +3,7 @@ package ion
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -104,6 +105,18 @@ func (p Prompt) Message(text ...string) (string, error) {
 		r = ParseLLMChat(n)
 	}
 	return r.Answer(), nil
+}
+
+func (p Prompt) JSON(text ...string) (JSON, error) {
+	r := ParseLLMChat(p)
+	if r.IsEmpty() {
+		n, err := p.Ask(text...)
+		if err != nil {
+			return nil, err
+		}
+		r = ParseLLMChat(n)
+	}
+	return r.Completion.JSON(strings.Join(text, "\n"))
 }
 
 type prompt struct {
