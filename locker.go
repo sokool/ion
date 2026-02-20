@@ -5,22 +5,36 @@ import (
 	"sync"
 )
 
-var locker Locker
+var lockerFn LockerFunc
 
-// Locker defines a function type that returns a sync.Locker based on a string key.
-type Locker func(context.Context, string) sync.Locker
-
-// UseLocker registers a custom Locker implementation for the application.
-// Logs the type of the Locker being registered.
-func UseLocker(l Locker) {
-	locker = l
+// Locker combines lock primitives with cancellation signaling.
+type Locker interface {
+	context.Context
+	sync.Locker
+	TryLock() bool
 }
 
-// NewLocker creates and returns a sync.Locker based on the provided optional name.
-// If no name is provided or locker is nil, it defaults to using a sync.Mutex instance.
-func NewLocker(ctx context.Context, name string) sync.Locker {
-	if locker == nil || len(name) == 0 {
-		return &sync.Mutex{}
+// LockerFunc creates a Locker for a named resource and parent context.
+type LockerFunc func(context.Context, string) Locker
+
+type locker struct {
+	context.Context
+	sync.Mutex
+}
+
+// UseLocker registers a custom Locker implementation for the application.
+func UseLocker(l LockerFunc) {
+	lockerFn = l
+}
+
+// NewLocker creates and returns Locker based on the provided optional name.
+// If no name is provided or locker is nil, it defaults to an in-memory local locker.
+func NewLocker(ctx context.Context, name string) Locker {
+	if ctx == nil {
+		ctx = Context()
 	}
-	return locker(ctx, name)
+	if lockerFn == nil || len(name) == 0 {
+		return &locker{Context: ctx}
+	}
+	return lockerFn(ctx, name)
 }
