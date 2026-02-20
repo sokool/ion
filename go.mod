@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/sokool/log v1.0.8
 	github.com/tidwall/gjson v1.18.0
+	github.com/tidwall/sjson v1.2.5
 	golang.org/x/exp v0.0.0-20251009144603-d2f985daa21b
 	golang.org/x/text v0.30.0
 	golang.org/x/time v0.14.0

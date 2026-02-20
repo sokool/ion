@@ -10,7 +10,7 @@ import (
 )
 
 func TestJSON(t *testing.T) {
-	object := []byte(`{
+	m := JSON(`{
 	"id": 1,
 	"name": "John",
 	"age": 30.6,
@@ -34,10 +34,7 @@ func TestJSON(t *testing.T) {
 	]
 }
 `)
-	var m JSON
-	if err := m.UnmarshalJSON(object); err != nil {
-		t.Fatal(err)
-	}
+
 	if m.Text("name") != "John" {
 		t.Fatalf("expected John, got %s", m.Text("name"))
 	}
