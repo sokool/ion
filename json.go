@@ -80,6 +80,20 @@ func (j JSON) Select(paths ...string) JSON {
 	}
 }
 
+// Has reports whether all paths resolve to values that are not empty according to IsEmpty.
+// It returns false when no paths are provided.
+func (j JSON) Has(paths ...string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		if j.Select(path).IsEmpty() {
+			return false
+		}
+	}
+	return true
+}
+
 // Read extracts multiple JSON values in a single call.
 //
 // Each argument pair must follow the pattern (path, target), where `path`
@@ -135,6 +149,17 @@ func (j JSON) Read(pathTargets ...any) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ReadF formats values at paths and decodes the resulting JSON string into target.
+// It supports the same targets as To, including json.Unmarshaler and
+// encoding.TextUnmarshaler implementations.
+func (j JSON) ReadF(target any, format string, paths ...string) error {
+	data, err := json.Marshal(j.Sprintf(format, paths...))
+	if err != nil {
+		return err
+	}
+	return JSON(data).To(target)
 }
 
 // Set updates the JSON at the specified path with the given value.
@@ -207,8 +232,20 @@ func (j JSON) Flat() Meta {
 	return result
 }
 
-func (j JSON) Time(path string) time.Time {
+// Time parses the value at path using the supplied layouts in order.
+// Without layouts, it accepts Unix seconds and RFC3339 timestamps.
+// It returns the zero time if parsing fails.
+func (j JSON) Time(path string, layouts ...string) time.Time {
 	s := strings.TrimSpace(j.Text(path))
+
+	if len(layouts) > 0 {
+		for _, layout := range layouts {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t
+			}
+		}
+		return time.Time{}
+	}
 
 	// Cut separates the seconds from the fractional part
 	lhs, rhs, hasFraction := strings.Cut(s, ".")
@@ -310,10 +347,28 @@ func (j JSON) Text(path string) string {
 	return gjson.GetBytes(j, path).String()
 }
 
-// Number returns the float64 value at the specified path.
-// It returns 0 if the path does not exist or is not a number.
-func (j JSON) Number(path string) float64 {
-	return gjson.GetBytes(j, path).Float()
+// Number returns the first number or numeric string found at paths as a float64.
+// Missing paths and values that cannot be converted are skipped.
+// It returns 0 if no value can be converted.
+func (j JSON) Number(paths ...string) float64 {
+	for _, path := range paths {
+		value := gjson.GetBytes(j, path)
+		switch value.Type {
+		case gjson.Number:
+			return value.Num
+		case gjson.String:
+			if number, err := strconv.ParseFloat(value.Str, 64); err == nil {
+				return number
+			}
+		}
+	}
+	return 0
+}
+
+// Int returns Number converted to an int using Go's numeric conversion rules.
+// Fractional values are truncated toward zero.
+func (j JSON) Int(paths ...string) int {
+	return int(j.Number(paths...))
 }
 
 // Bool returns the boolean value at the specified path.
@@ -332,11 +387,10 @@ func (j JSON) String() string {
 
 // Sprintf formats a string using values extracted from the JSON at the specified paths.
 //
-// Unlike Readf (which works on raw JSON bytes), Sprintf converts JSON values to
-// native Go types (float64, string, bool, nil) before formatting.
-// This allows standard fmt verbs like %s, %d, %.2f to work as expected.
+// JSON values are converted to native Go types (float64, string, bool, nil) before formatting.
+// JSON numbers are passed as float64; use %v or floating-point verbs for them.
 //
-// Example: j.Sprintf("User %s has ID %d", "user.name", "user.id")
+// Example: j.Sprintf("User %s has ID %.0f", "user.name", "user.id")
 func (j JSON) Sprintf(format string, paths ...string) string {
 	args := make([]any, len(paths))
 	for i, path := range paths {
