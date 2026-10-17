@@ -48,7 +48,7 @@ func NewTool[T any](name, desc string, fn func(T) (string, bool)) (Tool, error) 
 		break
 	}
 	if n == "" {
-		return Tool{}, ErrTool.New("invalid %s definition", v)
+		return Tool{}, ErrTool.New("invalid %T definition", v)
 	}
 
 	return Tool{

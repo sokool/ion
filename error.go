@@ -1,76 +1,204 @@
 package ion
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
+	"regexp"
+	"slices"
+	"strings"
+	"unicode"
 )
 
-type Error struct{ error }
+var errorVerb = regexp.MustCompile(`(?s)%[#0+\- .0-9*]*.`)
 
-func Errorf(msg string, args ...any) *Error {
-	if len(args) == 0 {
-		return &Error{error: errors.New(msg)}
-	}
-	return &Error{error: fmt.Errorf(msg, args...)}
+// Error is an immutable error with ordered, unique tags.
+type Error struct {
+	tags    []string
+	message string
+	cause   error
 }
 
-func (e *Error) New(msg string, args ...any) *Error {
-	if e.error != nil && e.error.Error() == "" {
-		return &Error{error: fmt.Errorf("%w"+msg, append([]any{e}, args...)...)}
+// Errorf formats an error and collects tags from *Error operands at plain %w.
+// Indexed formats and decorated %w use standard formatting without tag extraction.
+// Foreign errors are opaque. A leading tag: prefix or a lone word defines a tag.
+func Errorf(format string, args ...any) *Error {
+	wrapped := fmt.Errorf(format, args...)
+	e := &Error{message: wrapped.Error()}
+	switch w := wrapped.(type) {
+	case interface{ Unwrap() []error }:
+		e.cause = wrapped
+	case interface{ Unwrap() error }:
+		e.cause = w.Unwrap()
 	}
-	return &Error{error: fmt.Errorf("%w:"+msg, append([]any{e}, args...)...)}
+	if e.cause == nil {
+		e.parse(e.message, true)
+		return e
+	}
+	verbs := errorVerb.FindAllStringIndex(format, -1)
+	for _, pos := range verbs {
+		spec := format[pos[0]:pos[1]]
+		if strings.Contains(spec, "[") || strings.HasSuffix(spec, "w") && spec != "%w" {
+			return e
+		}
+	}
+	args = slices.Clone(args)
+	index, first := 0, -1
+	for _, pos := range verbs {
+		spec := format[pos[0]:pos[1]]
+		index += strings.Count(spec, "*")
+		if spec == "%w" && index < len(args) {
+			if err, ok := args[index].(error); ok && err != nil {
+				if first < 0 {
+					first = pos[0]
+				}
+				if tagged, ok := err.(*Error); ok && tagged != nil {
+					e.tag(tagged.tags...)
+					args[index] = &Error{message: tagged.message}
+				}
+			}
+		}
+		if !strings.HasSuffix(spec, "%") {
+			index++
+		}
+	}
+	if first < 0 {
+		e.parse(e.message, true)
+		return e
+	}
+	text := fmt.Errorf(format, args...).Error()
+	args = append(args, "")
+	prefix := format[:first] + fmt.Sprintf("%%[%d]s", len(args))
+	tags := e.tags
+	e.tags = nil
+	consumed := e.parse(fmt.Errorf(prefix, args...).Error(), false)
+	e.tag(tags...)
+	e.message = text[consumed:]
+	return e
 }
 
-func (e *Error) Wrap(err ...error) *Error {
-	var msg = "%w"
-	var ers = []any{e}
-	for i := range err {
-		msg += ":%w"
-		ers = append(ers, err[i])
+// New inherits e's tags and wraps e and any %w operands.
+// An existing message follows the new message, separated by ": ".
+func (e *Error) New(format string, args ...any) *Error {
+	next := Errorf(format, args...)
+	if e == nil {
+		return next
 	}
-	return &Error{error: fmt.Errorf(msg, ers...)}
+	tags := next.tags
+	next.tags = slices.Clone(e.tags)
+	next.tag(tags...)
+	if e.message != "" {
+		if next.message != "" {
+			next.message += ": "
+		}
+		next.message += e.message
+	}
+	if next.cause == nil {
+		next.cause = e
+	} else {
+		next.cause = errors.Join(e, next.cause)
+	}
+	return next
 }
 
-func (e *Error) In(err ...error) bool {
-	for i := range err {
-		if errors.Is(err[i], e) {
+// Wrap wraps e and errs, separating nonempty messages with ": ". Nil errors are ignored.
+func (e *Error) Wrap(errs ...error) *Error {
+	format, args := "%w", []any{e}
+	message := e != nil && e.message != ""
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		text := fmt.Sprint(err)
+		if tagged, ok := err.(*Error); ok && tagged != nil {
+			text = tagged.message
+		}
+		if message && text != "" {
+			format += ": "
+		}
+		format += "%w"
+		args = append(args, err)
+		message = message || text != ""
+	}
+	return Errorf(format, args...)
+}
+
+// In reports whether any of errs contains e, using errors.Is.
+func (e *Error) In(errs ...error) bool {
+	for _, err := range errs {
+		if errors.Is(err, e) {
 			return true
 		}
 	}
 	return false
 }
 
-func (e *Error) Split(err error) []error {
-	if w, ok := err.(interface{ Unwrap() []error }); ok {
-		return w.Unwrap()
+// Unwrap returns the cause, which may be a standard multi-error wrapper.
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
 	}
-	if w, ok := err.(interface{ Unwrap() error }); ok {
-		return []error{w.Unwrap()}
-	}
-	return nil
+	return e.cause
 }
 
-func (e *Error) Join(err ...error) error {
-	return errors.Join(err...)
+func (e *Error) tag(tags ...string) {
+	for _, tag := range tags {
+		if !slices.Contains(e.tags, tag) {
+			e.tags = append(e.tags, tag)
+		}
+	}
 }
 
-func (e *Error) Summarise(err error) error {
-	var s string
-	for _, f := range e.Split(err) {
-		s += fmt.Sprintf("%s\n", f)
+func (e *Error) parse(text string, single bool) int {
+	rest := text
+	for {
+		tag, next, colon := strings.Cut(rest, ":")
+		tag = strings.TrimSpace(tag)
+		if !colon && (!single || tag == "") || strings.ContainsFunc(tag, unicode.IsSpace) {
+			break
+		}
+		if tag != "" {
+			e.tag(strings.ToLower(tag))
+		}
+		rest = next
+		if !colon || strings.TrimLeftFunc(rest, unicode.IsSpace) != rest {
+			break
+		}
 	}
-	if s, err = Prompt(`
-		Summarize errors, make it short.
-		Count similar errors and show number.
-		Do not start from capital character.
-		Avoid : character`).
-		Cache(time.Hour * 24 * 30).
-		Model("gpt-4o").
-		Message(s); err != nil {
-		return err
+	if len(e.tags) > 0 {
+		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
 	}
-	return Errorf(s, []any{}...)
+	e.message = rest
+	return len(text) - len(rest)
 }
 
-func (e *Error) Unwrap() error { return e.error }
+// Error returns the tags followed by the formatted message.
+func (e *Error) Error() string {
+	if e == nil {
+		return ""
+	}
+	tags := strings.Join(e.tags, ":")
+	if tags == "" {
+		return e.message
+	}
+	if e.message == "" {
+		return tags
+	}
+	return tags + ": " + e.message
+}
+
+// MarshalJSON returns text, tags, and the untagged message.
+func (e *Error) MarshalJSON() ([]byte, error) {
+	if e == nil {
+		return []byte("null"), nil
+	}
+	tags := e.tags
+	if tags == nil {
+		tags = []string{}
+	}
+	return json.Marshal(struct {
+		Text    string   `json:"text"`
+		Tags    []string `json:"tags"`
+		Message string   `json:"message"`
+	}{e.Error(), tags, e.message})
+}
