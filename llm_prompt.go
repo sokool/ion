@@ -89,7 +89,7 @@ func (p Prompt) Ask(text ...string) (Prompt, error) {
 		r.Put(text[i])
 	}
 	r.ID, r.Prompt = UUID(s), s
-	if _, err := r.Complete(ctx); err != nil {
+	if _, err := r.Complete(Shutdown); err != nil {
 		return "", err
 	}
 	return r.Convert(), nil

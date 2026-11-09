@@ -37,13 +37,13 @@ func (s SQL[T]) Read(ctx context.Context, to Collection[T]) error {
 }
 
 func (s SQL[T]) Write(c context.Context, tt ...T) error {
-	db, err := SQLConnection(ctx)
+	db, err := SQLConnection(Shutdown)
 	if err != nil {
 		return err
 	}
 	cxt := c
 	if cxt == nil {
-		cxt, _ = context.WithTimeout(ctx, time.Second*5)
+		cxt, _ = context.WithTimeout(Shutdown, time.Second*5)
 	}
 	for _, t := range tt {
 		qry, args, err := s.query(t)
@@ -123,7 +123,7 @@ func (s SQL[T]) hash() uint64 {
 func (s SQL[T]) scan(c context.Context, params any, to func(T) error) error {
 	n := time.Now()
 	if c == nil {
-		c, _ = context.WithTimeout(ctx, time.Second*5)
+		c, _ = context.WithTimeout(Shutdown, time.Second*5)
 	}
 	qry, pms, err := s.query(params)
 	if err != nil {
@@ -132,7 +132,7 @@ func (s SQL[T]) scan(c context.Context, params any, to func(T) error) error {
 	if InUnitTests() {
 		return nil
 	}
-	db, err := SQLConnection(ctx)
+	db, err := SQLConnection(Shutdown)
 	if err != nil {
 		return err
 	}

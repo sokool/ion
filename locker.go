@@ -31,7 +31,7 @@ func UseLocker(l LockerFunc) {
 // If no name is provided or locker is nil, it defaults to an in-memory local locker.
 func NewLocker(ctx context.Context, name string) Locker {
 	if ctx == nil {
-		ctx = Context()
+		ctx = Shutdown
 	}
 	if lockerFn == nil || len(name) == 0 {
 		return &locker{Context: ctx}

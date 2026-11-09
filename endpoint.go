@@ -246,7 +246,7 @@ func (e Endpoint[REQ, RES]) execute(in REQ) (RES, error) {
 	}
 	cx := e.context
 	if e.context == nil {
-		cx = ctx
+		cx = Shutdown
 	}
 	req, err := http.NewRequestWithContext(cx, e.method, url, rdr)
 	if err != nil {

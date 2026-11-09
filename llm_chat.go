@@ -86,7 +86,7 @@ func (c *LLMChat) Read(message string) (string, error) {
 	if message != "" {
 		m = append(m, Message{Role: "user", Content: message})
 	}
-	o, err := c.Complete(ctx, m...)
+	o, err := c.Complete(Shutdown, m...)
 	if err != nil {
 		return "", err
 	}
@@ -159,7 +159,7 @@ func (c *LLMChat) read() error {
 	if c.ID == "" {
 		return Errorf("id not found")
 	}
-	if Get(ctx, c.key(), c) < 0 {
+	if Get(Shutdown, c.key(), c) < 0 {
 		return Errorf("read")
 	}
 	return nil
@@ -180,7 +180,7 @@ func (c *LLMChat) store() error {
 	if c.ID == "" {
 		return Errorf("id not found")
 	}
-	Set(ctx, c.key(), c)
+	Set(Shutdown, c.key(), c)
 	return nil
 }
 

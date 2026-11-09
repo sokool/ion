@@ -18,7 +18,10 @@ var (
 	Metrics *metrics
 	Cache   Store = &memory{}
 
-	ctx     context.Context
+	// Shutdown is canceled on os.Interrupt or by Exit.
+	// Callers must not reassign it.
+	Shutdown Context
+
 	log_    = NewLogger(os.Getenv("APP_NAME"))
 	cancel  func()
 	website string
@@ -26,19 +29,13 @@ var (
 
 func init() {
 	env = os.Getenv("ION_ENVIRONMENT")
-	ctx, cancel = signal.NotifyContext(context.Background(), os.Interrupt)
-	Tasks = NewJobs(ctx)
+	Shutdown, cancel = signal.NotifyContext(context.Background(), os.Interrupt)
+	Tasks = NewJobs(Shutdown)
 	Metrics = NewMetrics()
 
 	website, _ = os.LookupEnv("WEBSITE")
 
 	fmt.Println()
-}
-
-// Context with signal handler for graceful shutdowns. When process is closed then
-// context sends done signal
-func Context() context.Context {
-	return ctx
 }
 
 // Exit terminates the program with an exit code depending on the presence of errors in args.
@@ -131,5 +128,8 @@ func Printf(s any) {
 }
 
 type (
+	// Context is an alias for context.Context.
+	Context = context.Context
+
 	Iterator[K, V any] = iter.Seq2[K, V]
 )

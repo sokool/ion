@@ -5,7 +5,7 @@ logging, metrics, pub/sub, and LLM integrations. All features live in the `ion` 
 
 ## Installation
 
-Requires Go 1.25.1 or newer.
+Requires Go 1.27 or newer.
 
 ```sh
 go get github.com/sokool/ion
@@ -28,7 +28,7 @@ import (
 )
 
 func main() {
-	ctx, cancel := context.WithTimeout(ion.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ion.Shutdown, 10*time.Second)
 	defer cancel()
 
 	api, err := ion.APIFromURL("https://jsonplaceholder.typicode.com")
@@ -58,7 +58,7 @@ error handlers. Set a context deadline explicitly; the HTTP client has no defaul
 | JSON | `JSON`, `Meta`, path selection, decoding, mutation, merging, iteration |
 | SQL | `SQL[T]`, `SQLConnection`, `SQLTransaction`, `SQLWrapVars` |
 | Storage | `Store`, `UseStore`, `Get`, `Set`, global `Cache` |
-| Background jobs | `NewJobs`, global `Tasks`, `RunAsync` |
+| Asynchronous tasks | `NewJobs`, global `Tasks`, `Batch`, `ErrFatal` |
 | Logging | `NewLogger`, backed by [`sokool/log`](https://github.com/sokool/log) |
 | Metrics | `NewMetrics`, global `Metrics`, Prometheus-compatible HTTP handler |
 | Messaging | `Topic[T]`, `NewTopic`, `PubSub`, `UsePubSub` |
@@ -106,7 +106,7 @@ fmt.Println(body.JSON().Text("name")) // Ada
 a missing key, or `-1` on error.
 
 ```go
-ctx := ion.Context()
+ctx := ion.Shutdown
 if ion.Set(ctx, "user:42", ion.Meta{"name": "Ada"}) < 0 {
 	return fmt.Errorf("could not store user")
 }
@@ -126,31 +126,43 @@ Other infrastructure can also be replaced through `UsePubSub`, `UseLocker`, and
 The default locker creates a new local mutex per call; it does not coordinate separate
 calls or processes. Cross-worker locking requires a custom adapter.
 
-## Background jobs
+## Asynchronous tasks
 
-Jobs accept an empty schedule for a one-off run, a duration such as `"30m"`, a clock time
-such as `"15:04"`, or a weekday and time such as `"Monday 15:04"`.
+Register tasks during initialization, then start the application with `Execute`.
+Tasks use `ion.JobFunc` (`func(ion.Context) error`) and should stop on cancellation.
 
 ```go
-jobs := ion.NewJobs(ion.Context())
-defer jobs.Close()
-
-err := jobs.Run("heartbeat", func(ctx context.Context) error {
-	ion.NewLogger("heartbeat").Infof("still running")
-	return nil
-}, "30m")
-if err != nil {
-	return err
+func init() {
+	ion.Tasks.
+		Add("consumer", consume).
+		Add("heartbeat", heartbeat, "30m").
+		Add("cleanup", cleanup, "Monday 08:00", "Friday 16:00")
 }
-jobs.Wait()
+
+func main() {
+	if err := ion.Tasks.Execute(); err != nil {
+		log.Fatal(err)
+	}
+}
 ```
 
-A scheduled job with no stored execution time runs immediately on its first slot.
-Later runs follow the schedule. `Wait` blocks until the jobs context is canceled;
-it does not wait for individual job functions to finish.
+- Without events, a task runs once per application instance, without a distributed lock.
+- Schedules run immediately when no previous state exists. Busy slots are skipped;
+  executions of the same task never overlap within a manager.
+- Ordinary errors are logged. Return `ion.ErrFatal.New("consumer: %w", err)` to cancel
+  all tasks and return the error from `Execute` after shutdown.
+- `Terminate("name")` stops selected tasks; `Terminate()` stops all.
+  `Execute` waits for them to finish.
 
-For concurrent scheduled jobs, configure a concurrency-safe store. Coordination between
-workers also requires an appropriate locker adapter.
+Scheduled tasks require a concurrency-safe store. Coordination across application
+instances also requires a custom locker adapter.
+
+Use `ion.NewJobs(ctx)` for a registry with its own lifetime. For a one-off group of
+concurrent calls, `Batch` collects successful results and joins errors without registration:
+
+```go
+results, err := ion.Tasks.Batch(ctx, fetchPrimary, fetchReplica)
+```
 
 ## Metrics
 
@@ -223,11 +235,6 @@ fmt.Println(answer)
 an API URL. API URLs can include options such as `Cache=5m`, `Name=Service`, and
 `Header.Accept=application/json`. Bearer authentication can be specified using URL
 credentials in the form `https://bearer:TOKEN@api.example.com`.
-
-Importing ion initializes a shared context that is canceled on `os.Interrupt`, along
-with the default logger, job manager, metrics set, and store. It also prints a blank
-line to standard output. `ion.Exit` cancels that context, logs a message, and calls
-`os.Exit`; use it only at the application boundary.
 
 ## Development
 

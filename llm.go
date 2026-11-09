@@ -58,7 +58,7 @@ func (c *LLM) Response(ctx context.Context, m ...Message) ([]Message, error) {
 }
 
 func (c *LLM) Read(message string) (string, error) {
-	m, err := c.Response(ctx, Message{Role: "user", Content: message})
+	m, err := c.Response(Shutdown, Message{Role: "user", Content: message})
 	if err != nil {
 		return "", err
 	}

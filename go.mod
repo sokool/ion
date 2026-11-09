@@ -1,6 +1,6 @@
 module github.com/sokool/ion
 
-go 1.25.1
+go 1.27.0
 
 require (
 	github.com/VictoriaMetrics/metrics v1.40.2

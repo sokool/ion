@@ -268,5 +268,5 @@ func (a *API) set(hash string, b []byte, t time.Duration) int {
 	if t <= 0 {
 		return -1
 	}
-	return Set(Context(), hash, string(b), t)
+	return Set(Shutdown, hash, string(b), t)
 }

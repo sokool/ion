@@ -67,7 +67,7 @@ func (t *Topic[V]) Write(v V) error {
 	}
 	cx := t.Context
 	if cx == nil {
-		cx = ctx
+		cx = Shutdown
 	}
 	return ps.Publish(cx, *t.Name, b)
 }
@@ -82,7 +82,7 @@ func (t *Topic[V]) Read(err *error) <-chan V {
 	}
 	cx := t.Context
 	if cx == nil {
-		cx = ctx
+		cx = Shutdown
 	}
 	bch, er := ps.Subscribe(cx, *t.Name)
 	if er != nil {
@@ -94,7 +94,7 @@ func (t *Topic[V]) Read(err *error) <-chan V {
 		defer close(vch)
 		for {
 			select {
-			case <-ctx.Done():
+			case <-Shutdown.Done():
 				return
 			case b, ok := <-bch:
 				if !ok {
