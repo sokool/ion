@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/google/uuid"
 )
@@ -18,7 +19,7 @@ var (
 	Metrics *metrics
 	Cache   Store = &memory{}
 
-	// Shutdown is canceled on os.Interrupt or by Exit.
+	// Shutdown is canceled on os.Interrupt, syscall.SIGTERM, or by Exit.
 	// Callers must not reassign it.
 	Shutdown Context
 
@@ -29,7 +30,7 @@ var (
 
 func init() {
 	env = os.Getenv("ION_ENVIRONMENT")
-	Shutdown, cancel = signal.NotifyContext(context.Background(), os.Interrupt)
+	Shutdown, cancel = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	Tasks = NewJobs(Shutdown)
 	Metrics = NewMetrics()
 
