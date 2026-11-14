@@ -30,6 +30,19 @@ type (
 	}
 )
 
+// SQL represents a SQL statement whose result rows are mapped to T.
+//
+// SQL operations use the default connection unless the first line contains a
+// `connection=<name>` directive, for example:
+//
+//	q := ion.SQL[User](`/* ion:connection=legacy */
+//	SELECT id, name FROM users`)
+//
+// The directive is read from the first line, which remains part of the
+// statement and must be valid SQL (typically a comment). A named connection is
+// resolved from the corresponding <NAME>_URL environment variable. If it
+// cannot be resolved, the operation returns an error instead of falling back
+// to the default connection.
 type SQL[T any] string
 
 func (s SQL[T]) Read(ctx context.Context, to Collection[T]) error {
@@ -37,7 +50,7 @@ func (s SQL[T]) Read(ctx context.Context, to Collection[T]) error {
 }
 
 func (s SQL[T]) Write(c context.Context, tt ...T) error {
-	db, err := SQLConnection(Shutdown)
+	db, dialect, err := s.connection(Shutdown)
 	if err != nil {
 		return err
 	}
@@ -46,7 +59,7 @@ func (s SQL[T]) Write(c context.Context, tt ...T) error {
 		cxt, _ = context.WithTimeout(Shutdown, time.Second*5)
 	}
 	for _, t := range tt {
-		qry, args, err := s.query(t)
+		qry, args, err := s.query(t, dialect)
 		if err != nil {
 			return err
 		}
@@ -125,14 +138,18 @@ func (s SQL[T]) scan(c context.Context, params any, to func(T) error) error {
 	if c == nil {
 		c, _ = context.WithTimeout(Shutdown, time.Second*5)
 	}
-	qry, pms, err := s.query(params)
+	if InUnitTests() {
+		_, _, err := s.query(params, "")
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	db, dialect, err := s.connection(Shutdown)
 	if err != nil {
 		return err
 	}
-	if InUnitTests() {
-		return nil
-	}
-	db, err := SQLConnection(Shutdown)
+	qry, pms, err := s.query(params, dialect)
 	if err != nil {
 		return err
 	}
@@ -163,20 +180,50 @@ func (s SQL[T]) scan(c context.Context, params any, to func(T) error) error {
 	return nil
 }
 
+func (s SQL[T]) connection(ctx context.Context) (*SQLDB, string, error) {
+	line, _, _ := strings.Cut(string(s), "\n")
+	const directive = "connection="
+	i := strings.Index(line, directive)
+	var (
+		db  *SQLDB
+		err error
+	)
+	if i < 0 {
+		db, err = SQLConnection(ctx)
+	} else {
+		name := line[i+len(directive):]
+		if end := strings.IndexAny(name, " \t\r*/;"); end >= 0 {
+			name = name[:end]
+		}
+		if name == "" {
+			return nil, "", ErrSQLQuery.New("connection name is empty")
+		}
+		db, err = SQLConnection(ctx, name)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	dialect, ok := sqlDialects.Load(db)
+	if !ok {
+		return nil, "", ErrSQL.New("dialect not found for SQL connection")
+	}
+	return db, dialect.(string), nil
+}
+
 // query processes SQL query template by replacing variables in format described by
-// sqlPrefix and sqlPostfix with $N placeholders and collecting corresponding values from
-// the params object. Variable names can include dots and array indexes to access nested
-// fields. Returns the processed query string, slice of parameter values, and any
-// error that occurred during processing.
+// sqlPrefix and sqlPostfix with dialect-specific placeholders and collecting corresponding
+// values from params. Variable names can include dots and array indexes to access nested
+// fields. MySQL uses a placeholder for every occurrence; PostgreSQL-style connections
+// use numbered placeholders and reuse them for repeated variables.
 //
 // Parameters:
 //   - params: Any object containing values for query parameters
 //
 // Returns:
-//   - string: Processed SQL query with $N placeholders
+//   - string: Processed SQL query with placeholders for the selected dialect
 //   - []any: Slice of parameter values corresponding to placeholders
 //   - error: Error if query processing fails
-func (s SQL[T]) query(params any) (string, []any, error) {
+func (s SQL[T]) query(params any, dialect string) (string, []any, error) {
 	in := string(s)
 	if in == "" {
 		return in, nil, nil
@@ -199,12 +246,12 @@ func (s SQL[T]) query(params any) (string, []any, error) {
 	}
 
 	var (
-		sb strings.Builder
-		as []any
-		r  = NewReflect(params)
-		i  = 0
-		mv = make(map[string]int) // name -> 1-based index
-		p0 = 0
+		sb     strings.Builder
+		as     []any
+		r      = NewReflect(params)
+		values = make(map[string]any)
+		mv     = make(map[string]int) // name -> 1-based index
+		p0     = 0
 	)
 
 	for _, m := range re.FindAllStringSubmatchIndex(in, -1) {
@@ -217,21 +264,29 @@ func (s SQL[T]) query(params any) (string, []any, error) {
 		}
 		name := in[ns:ne]
 
-		idx, ok := mv[name]
+		value, ok := values[name]
 		if !ok {
-			v, err := r.Get(name)
+			value, err = r.Get(name)
 			if err != nil {
 				return "", nil, ErrSQLQuery.New("%q %w", name, err)
 			}
-			as = append(as, valuer{v})
-			i++
-			idx = i
-			mv[name] = idx
+			values[name] = value
 		}
 
 		sb.WriteString(in[p0:a])
-		sb.WriteString("$")
-		sb.WriteString(strconv.Itoa(idx))
+		if dialect == "mysql" {
+			sb.WriteByte('?')
+			as = append(as, valuer{value})
+		} else {
+			idx, ok := mv[name]
+			if !ok {
+				as = append(as, valuer{value})
+				idx = len(as)
+				mv[name] = idx
+			}
+			sb.WriteByte('$')
+			sb.WriteString(strconv.Itoa(idx))
+		}
 		p0 = e
 	}
 	sb.WriteString(in[p0:])
@@ -251,7 +306,10 @@ func SQLMigrate(schema, table string, files embed.FS) error {
 	return nil
 }
 
-var sqlConnections sync.Map
+var (
+	sqlConnections sync.Map
+	sqlDialects    sync.Map
+)
 
 // SQLConnection establishes a new SQL connection or returns an existing one.
 // It retrieves connection settings from environment variables, based on `name`.
@@ -305,8 +363,10 @@ func SQLConnection(ctx context.Context, name ...string) (*SQLDB, error) {
 		db.SetConnMaxLifetime(d)
 	}
 	// double-check pattern (avoid duplicate connections)
+	sqlDialects.Store(db, url.Scheme)
 	actual, loaded := sqlConnections.LoadOrStore(env, db)
 	if loaded {
+		sqlDialects.Delete(db)
 		db.Close() // discard new one, keep old
 		return actual.(*SQLDB), nil
 	}
