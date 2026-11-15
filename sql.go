@@ -45,11 +45,11 @@ type (
 // to the default connection.
 type SQL[T any] string
 
-func (s SQL[T]) Read(ctx context.Context, to Collection[T]) error {
+func (s SQL[T]) Read(ctx Context, to Collection[T]) error {
 	return s.scan(ctx, to, to.Append)
 }
 
-func (s SQL[T]) Write(c context.Context, tt ...T) error {
+func (s SQL[T]) Write(c Context, tt ...T) error {
 	db, dialect, err := s.connection(Shutdown)
 	if err != nil {
 		return err
@@ -73,12 +73,12 @@ func (s SQL[T]) Write(c context.Context, tt ...T) error {
 	return nil
 }
 
-func (s SQL[T]) All(ctx context.Context, params any) ([]T, error) {
+func (s SQL[T]) All(ctx Context, params any) ([]T, error) {
 	var o []T
 	return o, s.scan(ctx, params, func(t T) error { o = append(o, t); return nil })
 }
 
-func (s SQL[T]) One(ctx context.Context, params any) (T, error) {
+func (s SQL[T]) One(ctx Context, params any) (T, error) {
 	var t T
 	var fn = func(n T) error { t = n; return nil }
 	if err := s.scan(ctx, params, fn); err != nil {
@@ -107,7 +107,7 @@ func (s SQL[T]) Stream(params any) <-chan T {
 	return ch
 }
 
-func (s SQL[T]) Each(ctx context.Context, params any) Iterator[T, error] {
+func (s SQL[T]) Each(ctx Context, params any) Iterator[T, error] {
 	return func(fn func(T, error) bool) {
 		tt, err := s.All(ctx, params)
 		if err != nil {
@@ -133,7 +133,7 @@ func (s SQL[T]) hash() uint64 {
 	return h.Sum64()
 }
 
-func (s SQL[T]) scan(c context.Context, params any, to func(T) error) error {
+func (s SQL[T]) scan(c Context, params any, to func(T) error) error {
 	n := time.Now()
 	if c == nil {
 		c, _ = context.WithTimeout(Shutdown, time.Second*5)
@@ -180,7 +180,7 @@ func (s SQL[T]) scan(c context.Context, params any, to func(T) error) error {
 	return nil
 }
 
-func (s SQL[T]) connection(ctx context.Context) (*SQLDB, string, error) {
+func (s SQL[T]) connection(ctx Context) (*SQLDB, string, error) {
 	line, _, _ := strings.Cut(string(s), "\n")
 	const directive = "connection="
 	i := strings.Index(line, directive)
@@ -315,7 +315,7 @@ var (
 // It retrieves connection settings from environment variables, based on `name`.
 // The function applies connection pooling configurations if provided in the URL.
 // Thread-safe and avoids duplicate connections using sync.Map.
-func SQLConnection(ctx context.Context, name ...string) (*SQLDB, error) {
+func SQLConnection(ctx Context, name ...string) (*SQLDB, error) {
 	if len(name) == 0 {
 		name = append(name, "postgres", "mysql")
 	}
@@ -374,7 +374,7 @@ func SQLConnection(ctx context.Context, name ...string) (*SQLDB, error) {
 	return db, nil
 }
 
-func SQLTransaction(ctx context.Context, fn func(*SQLTX) error) error {
+func SQLTransaction(ctx Context, fn func(*SQLTX) error) error {
 	if InUnitTests() {
 		return nil
 	}
@@ -430,7 +430,7 @@ func (f *scanner[T]) Scan(src any) error {
 		err := json.Unmarshal(v, &f.T)
 		return err
 	case string:
-		err := json.Unmarshal([]byte(v), f.T)
+		err := json.Unmarshal([]byte(v), &f.T)
 		return err
 	case nil:
 		//*f = Foo{} // reset
