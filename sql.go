@@ -59,12 +59,12 @@ func (s SQL[T]) Write(c Context, tt ...T) error {
 	return nil
 }
 
-func (s SQL[T]) All[P any](ctx Context, params P) ([]T, error) {
+func (s SQL[T]) Read[P any](ctx Context, params P) ([]T, error) {
 	var o []T
 	return o, s.scan(ctx, params, func(t T) error { o = append(o, t); return nil })
 }
 
-func (s SQL[T]) One[P any](ctx Context, params P) (T, error) {
+func (s SQL[T]) ReadFirst[P any](ctx Context, params P) (T, error) {
 	var t T
 	var fn = func(n T) error { t = n; return nil }
 	if err := s.scan(ctx, params, fn); err != nil {
@@ -105,7 +105,7 @@ func (s SQL[T]) Stream[P any](ctx Context, params P) <-chan T {
 
 func (s SQL[T]) Each[P any](ctx Context, params P) Iterator[T, error] {
 	return func(fn func(T, error) bool) {
-		tt, err := s.All(ctx, params)
+		tt, err := s.Read(ctx, params)
 		if err != nil {
 			var t T
 			fn(t, err)
