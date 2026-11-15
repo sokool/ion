@@ -56,7 +56,7 @@ error handlers. Set a context deadline explicitly; the HTTP client has no defaul
 | --- | --- |
 | HTTP clients | `APIFromURL`, `NewAPI`, `NewEndpoint`, `JSONEndpoint` |
 | JSON | `JSON`, `Meta`, path selection, decoding, mutation, merging, iteration |
-| SQL | `SQL[T]`, `SQLConnection`, `SQLTransaction`, `SQLWrapVars` |
+| SQL | `SQL[T]`, `RDBMS.Connection`, `RDBMS.Transaction`, `RDBMS.SQLWrapVars` |
 | Storage | `Store`, `UseStore`, `Get`, `Set`, global `Cache` |
 | Asynchronous tasks | `NewJobs`, global `Tasks`, `Batch`, `ErrFatal` |
 | Logging | `NewLogger`, backed by [`sokool/log`](https://github.com/sokool/log) |
@@ -182,19 +182,22 @@ The handler exports Prometheus-compatible application and process metrics.
 
 `SQL[T]` represents a query with typed results. Parameters use `${Field}` markers by
 default; ion resolves them from the supplied value and replaces them with `$1`, `$2`,
-and so on. Use `SQLWrapVars` to change the marker delimiters.
+and so on. Use `RDBMS.SQLWrapVars` to change the marker delimiters.
 
 - Register a `database/sql` driver in your application; ion does not bundle drivers.
-- `SQLConnection(ctx)` looks for `POSTGRES_URL`, then `MYSQL_URL`. An explicit name such
-  as `SQLConnection(ctx, "analytics")` selects `ANALYTICS_URL`.
+- `RDBMS.Connection(ctx)` looks for `POSTGRES_URL`, then `MYSQL_URL`. An explicit name
+  such as `RDBMS.Connection(ctx, "analytics")` selects `ANALYTICS_URL`.
 - The URL scheme must match the registered SQL driver name.
 - Typed reads expect one JSON column per row, decoded into `T`, rather than one column
   per struct field.
 - Queries use PostgreSQL-style numbered placeholders; changing marker delimiters does
   not change the generated placeholder syntax.
-- SQL reads, writes, and transaction callbacks are skipped in Go test binaries.
-- `SQLMigrate` and `SQL[T].TX` are currently placeholders; they do not apply migrations
-  or bind a query to a transaction.
+- SQL query methods and transaction callbacks are no-ops in Go test binaries; reads return
+  empty results and streams close immediately.
+- `RDBMS.Transaction(ctx, fn, "analytics")` runs `fn` in a transaction on
+  `ANALYTICS_URL`. The callback receives a transaction context; ordinary `Read` and
+  `Write` calls using that context participate in the transaction. A query-level
+  `connection=` directive must match the transaction connection.
 
 ## LLM integrations
 

@@ -1,9 +1,9 @@
 package ion
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -17,11 +17,18 @@ import (
 var (
 	ErrSQL      = Errorf("sql")
 	ErrSQLQuery = ErrSQL.New("query")
+
+	RDBMS                = rdbms{sqlVar: [2]string{"${", "}"}}
+	sqlTransactionCtxKey = &struct{}{}
 )
 
 type (
-	SQLDB = sql.DB
-	SQLTX = sql.Tx
+	SQLDB       = sql.DB
+	SQLTX       = sql.Tx
+	sqlExecutor interface {
+		ExecContext(Context, string, ...any) (sql.Result, error)
+		QueryContext(Context, string, ...any) (*sql.Rows, error)
+	}
 )
 
 // SQL represents a SQL statement whose result rows are mapped to T.
@@ -40,19 +47,23 @@ type (
 type SQL[T any] string
 
 func (s SQL[T]) Write(c Context, tt ...T) error {
-	db, dialect, err := s.connection(c)
+	if InUnitTests() {
+		return nil
+	}
+	executor, err := s.connection(c)
 	if err != nil {
 		return err
 	}
-	for _, t := range tt {
-		qry, args, err := s.query(t, dialect)
+	dialect, err := RDBMS.dialect(executor)
+	if err != nil {
+		return err
+	}
+	for i := range tt {
+		qry, args, err := s.query(tt[i], dialect)
 		if err != nil {
 			return err
 		}
-		if InUnitTests() {
-			continue
-		}
-		if _, err = db.ExecContext(c, qry, args...); err != nil {
+		if _, err = executor.ExecContext(c, qry, args...); err != nil {
 			return err
 		}
 	}
@@ -60,42 +71,45 @@ func (s SQL[T]) Write(c Context, tt ...T) error {
 }
 
 func (s SQL[T]) Read[P any](ctx Context, params P) ([]T, error) {
-	var o []T
-	return o, s.scan(ctx, params, func(t T) error { o = append(o, t); return nil })
-}
-
-func (s SQL[T]) ReadFirst[P any](ctx Context, params P) (T, error) {
-	var t T
-	var fn = func(n T) error { t = n; return nil }
-	if err := s.scan(ctx, params, fn); err != nil {
-		return t, err
+	if InUnitTests() {
+		return []T{}, nil
 	}
-	return t, nil
+	executor, err := s.connection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var tt []T
+	err = s.read(ctx, executor, params, func(t T) error { tt = append(tt, t); return nil })
+	return tt, err
 }
 
 func (s SQL[T]) String() string {
-	return ""
-}
-
-func (s SQL[T]) TX(c *SQLTX) SQL[T] {
-	return s
+	return string(s)
 }
 
 func (s SQL[T]) Stream[P any](ctx Context, params P) <-chan T {
+	ch := make(chan T)
+	if InUnitTests() {
+		close(ch)
+		return ch
+	}
 	if ctx == nil {
 		panic("ion.SQL.Stream: nil context")
 	}
-	ch := make(chan T)
-	fn := func(t T) error {
+	to := func(value T) error {
 		select {
-		case ch <- t:
+		case ch <- value:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
 	go func() {
-		if err := s.scan(ctx, params, fn); err != nil {
+		executor, err := s.connection(ctx)
+		if err == nil {
+			err = s.read(ctx, executor, params, to)
+		}
+		if err != nil {
 			log_.Errorf("%s", err)
 		}
 		close(ch)
@@ -104,6 +118,9 @@ func (s SQL[T]) Stream[P any](ctx Context, params P) <-chan T {
 }
 
 func (s SQL[T]) Each[P any](ctx Context, params P) Iterator[T, error] {
+	if InUnitTests() {
+		return func(func(T, error) bool) {}
+	}
 	return func(fn func(T, error) bool) {
 		tt, err := s.Read(ctx, params)
 		if err != nil {
@@ -118,27 +135,23 @@ func (s SQL[T]) Each[P any](ctx Context, params P) Iterator[T, error] {
 	}
 }
 
-func (s SQL[T]) scan[P any](c Context, params P, to func(T) error) error {
+func (s SQL[T]) read[P any](c Context, e sqlExecutor, params P, to func(T) error) error {
 	if c == nil {
 		return ErrSQL.New("context is nil")
 	}
+	if e == nil {
+		return ErrSQL.New("query executor is nil")
+	}
+	dialect, err := RDBMS.dialect(e)
+	if err != nil {
+		return err
+	}
 	n := time.Now()
-	if InUnitTests() {
-		_, _, err := s.query(params, "")
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-	db, dialect, err := s.connection(c)
+	query, pms, err := s.query(params, dialect)
 	if err != nil {
 		return err
 	}
-	qry, pms, err := s.query(params, dialect)
-	if err != nil {
-		return err
-	}
-	rows, err := db.QueryContext(c, qry, pms...)
+	rows, err := e.QueryContext(c, query, pms...)
 	if err != nil {
 		return ErrSQL.Wrap(err)
 	}
@@ -146,15 +159,15 @@ func (s SQL[T]) scan[P any](c Context, params P, to func(T) error) error {
 	var i int
 	for rows.Next() {
 		var scn scanner[T]
-		if err = rows.Scan(&scn); err != nil {
+		if err := rows.Scan(&scn); err != nil {
 			return ErrSQL.Wrap(err)
 		}
-		if err = to(scn.T); err != nil {
+		if err := to(scn.T); err != nil {
 			return ErrSQL.Wrap(err)
 		}
 		i++
 	}
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return ErrSQL.Wrap(err)
 	}
 	m := time.Since(n).String()
@@ -165,7 +178,14 @@ func (s SQL[T]) scan[P any](c Context, params P, to func(T) error) error {
 	return nil
 }
 
-func (s SQL[T]) connection(ctx Context) (*SQLDB, string, error) {
+func (s SQL[T]) connection(ctx Context) (sqlExecutor, error) {
+	if ctx == nil {
+		return nil, ErrSQL.New("context is nil")
+	}
+	if tx, ok := ctx.Value(sqlTransactionCtxKey).(*SQLTX); ok {
+		return s.transaction(ctx, tx)
+	}
+
 	line, _, _ := strings.Cut(string(s), "\n")
 	const directive = "connection="
 	i := strings.Index(line, directive)
@@ -174,25 +194,55 @@ func (s SQL[T]) connection(ctx Context) (*SQLDB, string, error) {
 		err error
 	)
 	if i < 0 {
-		db, err = SQLConnection(ctx)
+		db, err = RDBMS.Connection(ctx)
 	} else {
 		name := line[i+len(directive):]
 		if end := strings.IndexAny(name, " \t\r*/;"); end >= 0 {
 			name = name[:end]
 		}
 		if name == "" {
-			return nil, "", ErrSQLQuery.New("connection name is empty")
+			return nil, ErrSQLQuery.New("connection name is empty")
 		}
-		db, err = SQLConnection(ctx, name)
+		db, err = RDBMS.Connection(ctx, name)
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	dialect, ok := sqlDialects.Load(db)
+	return db, nil
+}
+
+func (s SQL[T]) transaction(ctx Context, tx *SQLTX) (sqlExecutor, error) {
+	if ctx == nil {
+		return nil, ErrSQL.New("context is nil")
+	}
+	if tx == nil {
+		return nil, ErrSQL.New("transaction is nil")
+	}
+	value, ok := RDBMS.transactions.Load(tx)
 	if !ok {
-		return nil, "", ErrSQL.New("dialect not found for SQL connection")
+		return nil, ErrSQL.New("transaction was not created by RDBMS.Transaction")
 	}
-	return db, dialect.(string), nil
+	db := value.(*SQLDB)
+
+	line, _, _ := strings.Cut(string(s), "\n")
+	const directive = "connection="
+	if i := strings.Index(line, directive); i >= 0 {
+		name := line[i+len(directive):]
+		if end := strings.IndexAny(name, " \t\r*/;"); end >= 0 {
+			name = name[:end]
+		}
+		if name == "" {
+			return nil, ErrSQLQuery.New("connection name is empty")
+		}
+		selectedDB, err := RDBMS.Connection(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if selectedDB != db {
+			return nil, ErrSQL.New("query connection does not match transaction")
+		}
+	}
+	return tx, nil
 }
 
 // query processes SQL query template by replacing variables in format described by
@@ -214,16 +264,17 @@ func (s SQL[T]) query[P any](params P, dialect string) (string, []any, error) {
 		return in, nil, nil
 	}
 
-	if sqlVar[0] == "" {
-		return "", nil, ErrSQLQuery.New("variable prefix cannot be empty, use app.SQLPrefix")
+	vars := RDBMS.variables()
+	if vars[0] == "" {
+		return "", nil, ErrSQLQuery.New("variable prefix cannot be empty, use RDBMS.SQLWrapVars")
 	}
 
 	seg := `[A-Za-z_][A-Za-z0-9_]*(?:$begin:math:display$[0-9]+$end:math:display$)*`
 	name := `(?P<name>` + seg + `(?:\.` + seg + `)*)`
 	epo := ""
-	ep := regexp.QuoteMeta(sqlVar[0])
-	if sqlVar[1] != "" {
-		epo = regexp.QuoteMeta(sqlVar[1])
+	ep := regexp.QuoteMeta(vars[0])
+	if vars[1] != "" {
+		epo = regexp.QuoteMeta(vars[1])
 	}
 	re, err := regexp.Compile(ep + name + epo)
 	if err != nil {
@@ -279,37 +330,74 @@ func (s SQL[T]) query[P any](params P, dialect string) (string, []any, error) {
 	return sb.String(), as, nil
 }
 
-func SQLMigrate(schema, table string, files embed.FS) error {
-	//return RDBMS.AcquireFunc(ctx, func(c *pgxpool.Conn) error {
-	//	cfg := dbump.Config{
-	//		Migrator: dbump_pgx.NewMigrator(c.Conn(), dbump_pgx.Config{Schema: schema, Table: table}),
-	//		Loader:   dbump.NewFileSysLoader(files, "migrations/"),
-	//		Mode:     dbump.ModeApplyAll,
-	//	}
-	//	return dbump.Run(ctx, cfg)
-	//})
-	return nil
+type rdbms struct {
+	mu           sync.RWMutex
+	connections  sync.Map
+	dialects     sync.Map
+	transactions sync.Map
+	sqlVar       [2]string
 }
 
-var (
-	sqlConnections sync.Map
-	sqlDialects    sync.Map
-)
+// SQLWrapVars sets the prefix and postfix used for SQL variable interpolation.
+// Examples:
+//
+//	RDBMS.SQLWrapVars("{", "}")
+//	// Produces variables like: {id}, {name}
+//
+//	RDBMS.SQLWrapVars(":", "")
+//	// Produces variables like: :id, :name
+func (s *rdbms) SQLWrapVars(prefix, postfix string) {
+	s.mu.Lock()
+	s.sqlVar = [2]string{prefix, postfix}
+	s.mu.Unlock()
+}
 
-// SQLConnection establishes a new SQL connection or returns an existing one.
+func (s *rdbms) variables() [2]string {
+	s.mu.RLock()
+	vars := s.sqlVar
+	s.mu.RUnlock()
+	return vars
+}
+
+func (s *rdbms) dialect(e sqlExecutor) (string, error) {
+	var db *SQLDB
+	switch connection := e.(type) {
+	case *SQLDB:
+		db = connection
+	case *SQLTX:
+		value, ok := s.transactions.Load(connection)
+		if !ok {
+			return "", ErrSQL.New("transaction was not created by RDBMS.Transaction")
+		}
+		db = value.(*SQLDB)
+	default:
+		return "", ErrSQL.New("unsupported SQL executor %T", e)
+	}
+
+	dialect, ok := s.dialects.Load(db)
+	if !ok {
+		return "", ErrSQL.New("dialect not found for SQL connection")
+	}
+	return dialect.(string), nil
+}
+
+// Connection establishes a new SQL connection or returns an existing one.
 // It retrieves connection settings from environment variables, based on `name`.
 // The function applies connection pooling configurations if provided in the URL.
 // Thread-safe and avoids duplicate connections using sync.Map.
-func SQLConnection(ctx Context, name ...string) (*SQLDB, error) {
+func (s *rdbms) Connection(ctx Context, name ...string) (*SQLDB, error) {
 	if len(name) == 0 {
 		name = append(name, "postgres", "mysql")
+	}
+	if ctx == nil {
+		return nil, ErrSQL.New("context is nil")
 	}
 	var url *URL
 	var err error
 	var env string
 	for i := range name {
 		env = fmt.Sprintf("%s_URL", strings.ToUpper(name[i]))
-		if db, ok := sqlConnections.Load(env); ok {
+		if db, ok := s.connections.Load(env); ok {
 			return db.(*SQLDB), nil
 		}
 		switch url, err = EnvURL(env); {
@@ -348,10 +436,10 @@ func SQLConnection(ctx Context, name ...string) (*SQLDB, error) {
 		db.SetConnMaxLifetime(d)
 	}
 	// double-check pattern (avoid duplicate connections)
-	sqlDialects.Store(db, url.Scheme)
-	actual, loaded := sqlConnections.LoadOrStore(env, db)
+	s.dialects.Store(db, url.Scheme)
+	actual, loaded := s.connections.LoadOrStore(env, db)
 	if loaded {
-		sqlDialects.Delete(db)
+		s.dialects.Delete(db)
 		db.Close() // discard new one, keep old
 		return actual.(*SQLDB), nil
 	}
@@ -359,18 +447,34 @@ func SQLConnection(ctx Context, name ...string) (*SQLDB, error) {
 	return db, nil
 }
 
-func SQLTransaction(ctx Context, fn func(*SQLTX) error) error {
+// Transaction runs fn within a transaction on the default or optional named
+// SQL connection. SQL operations in fn use the transaction context automatically.
+func (s *rdbms) Transaction(ctx Context, fn func(Context) error, connection ...string) error {
+	if len(connection) > 1 || (len(connection) == 1 && connection[0] == "") {
+		return ErrSQL.New("transaction accepts at most one non-empty connection name")
+	}
+	if ctx == nil {
+		return ErrSQL.New("context is nil")
+	}
+	if fn == nil {
+		return ErrSQL.New("transaction callback is nil")
+	}
 	if InUnitTests() {
 		return nil
 	}
-	db, err := SQLConnection(ctx)
+	db, err := s.Connection(ctx, connection...)
 	if err != nil {
 		return err
+	}
+	if _, ok := s.dialects.Load(db); !ok {
+		return ErrSQL.New("dialect not found for SQL transaction")
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return ErrSQL.New("tx: begin %w", err)
 	}
+	s.transactions.Store(tx, db)
+	defer s.transactions.Delete(tx)
 
 	defer func() {
 		if p := recover(); p != nil {
@@ -379,7 +483,8 @@ func SQLTransaction(ctx Context, fn func(*SQLTX) error) error {
 		}
 	}()
 
-	if err := fn(tx); err != nil {
+	txCtx := context.WithValue(ctx, sqlTransactionCtxKey, tx)
+	if err := fn(txCtx); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -387,24 +492,6 @@ func SQLTransaction(ctx Context, fn func(*SQLTX) error) error {
 		return fmt.Errorf("commit tx: %w", err)
 	}
 	return nil
-}
-
-var sqlVar = [2]string{"${", "}"}
-
-// SQLWrapVars sets the prefix and postfix used for SQL variable interpolation.
-// This function defines how variables should be wrapped when constructing SQL
-// statements.
-// Examples:
-//
-//	SQLWrapVars("{", "}")
-//	// Produces variables like: {id}, {name}
-//
-//	SQLWrapVars(":", "")
-//	// Produces variables like: :id, :name
-//
-// Use this to customize the variable markers for different SQL dialects.
-func SQLWrapVars(prefix, postfix string) {
-	sqlVar[0], sqlVar[1] = prefix, postfix
 }
 
 type scanner[T any] struct{ T T }
