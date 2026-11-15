@@ -1,13 +1,11 @@
 package ion
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"embed"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"math"
 	"regexp"
 	"strconv"
@@ -22,12 +20,8 @@ var (
 )
 
 type (
-	SQLDB             = sql.DB
-	SQLTX             = sql.Tx
-	Collection[T any] interface {
-		Append(T) error
-		Get(int) (T, bool)
-	}
+	SQLDB = sql.DB
+	SQLTX = sql.Tx
 )
 
 // SQL represents a SQL statement whose result rows are mapped to T.
@@ -45,18 +39,10 @@ type (
 // to the default connection.
 type SQL[T any] string
 
-func (s SQL[T]) Read(ctx Context, to Collection[T]) error {
-	return s.scan(ctx, to, to.Append)
-}
-
 func (s SQL[T]) Write(c Context, tt ...T) error {
-	db, dialect, err := s.connection(Shutdown)
+	db, dialect, err := s.connection(c)
 	if err != nil {
 		return err
-	}
-	cxt := c
-	if cxt == nil {
-		cxt, _ = context.WithTimeout(Shutdown, time.Second*5)
 	}
 	for _, t := range tt {
 		qry, args, err := s.query(t, dialect)
@@ -66,7 +52,7 @@ func (s SQL[T]) Write(c Context, tt ...T) error {
 		if InUnitTests() {
 			continue
 		}
-		if _, err = db.ExecContext(cxt, qry, args...); err != nil {
+		if _, err = db.ExecContext(c, qry, args...); err != nil {
 			return err
 		}
 	}
@@ -95,11 +81,21 @@ func (s SQL[T]) TX(c *SQLTX) SQL[T] {
 	return s
 }
 
-func (s SQL[T]) Stream[P any](params P) <-chan T {
+func (s SQL[T]) Stream[P any](ctx Context, params P) <-chan T {
+	if ctx == nil {
+		panic("ion.SQL.Stream: nil context")
+	}
 	ch := make(chan T)
-	fn := func(t T) error { ch <- t; return nil }
+	fn := func(t T) error {
+		select {
+		case ch <- t:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	go func() {
-		if err := s.scan(nil, params, fn); err != nil {
+		if err := s.scan(ctx, params, fn); err != nil {
 			log_.Errorf("%s", err)
 		}
 		close(ch)
@@ -122,22 +118,11 @@ func (s SQL[T]) Each[P any](ctx Context, params P) Iterator[T, error] {
 	}
 }
 
-func (s SQL[T]) Foo(n string) SQL[T] {
-	fmt.Println(s.hash())
-	return s
-}
-
-func (s SQL[T]) hash() uint64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(s))
-	return h.Sum64()
-}
-
 func (s SQL[T]) scan[P any](c Context, params P, to func(T) error) error {
-	n := time.Now()
 	if c == nil {
-		c, _ = context.WithTimeout(Shutdown, time.Second*5)
+		return ErrSQL.New("context is nil")
 	}
+	n := time.Now()
 	if InUnitTests() {
 		_, _, err := s.query(params, "")
 		if err != nil {
@@ -145,7 +130,7 @@ func (s SQL[T]) scan[P any](c Context, params P, to func(T) error) error {
 		}
 		return nil
 	}
-	db, dialect, err := s.connection(Shutdown)
+	db, dialect, err := s.connection(c)
 	if err != nil {
 		return err
 	}
