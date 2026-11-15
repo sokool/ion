@@ -73,12 +73,12 @@ func (s SQL[T]) Write(c Context, tt ...T) error {
 	return nil
 }
 
-func (s SQL[T]) All(ctx Context, params any) ([]T, error) {
+func (s SQL[T]) All[P any](ctx Context, params P) ([]T, error) {
 	var o []T
 	return o, s.scan(ctx, params, func(t T) error { o = append(o, t); return nil })
 }
 
-func (s SQL[T]) One(ctx Context, params any) (T, error) {
+func (s SQL[T]) One[P any](ctx Context, params P) (T, error) {
 	var t T
 	var fn = func(n T) error { t = n; return nil }
 	if err := s.scan(ctx, params, fn); err != nil {
@@ -95,7 +95,7 @@ func (s SQL[T]) TX(c *SQLTX) SQL[T] {
 	return s
 }
 
-func (s SQL[T]) Stream(params any) <-chan T {
+func (s SQL[T]) Stream[P any](params P) <-chan T {
 	ch := make(chan T)
 	fn := func(t T) error { ch <- t; return nil }
 	go func() {
@@ -107,7 +107,7 @@ func (s SQL[T]) Stream(params any) <-chan T {
 	return ch
 }
 
-func (s SQL[T]) Each(ctx Context, params any) Iterator[T, error] {
+func (s SQL[T]) Each[P any](ctx Context, params P) Iterator[T, error] {
 	return func(fn func(T, error) bool) {
 		tt, err := s.All(ctx, params)
 		if err != nil {
@@ -133,7 +133,7 @@ func (s SQL[T]) hash() uint64 {
 	return h.Sum64()
 }
 
-func (s SQL[T]) scan(c Context, params any, to func(T) error) error {
+func (s SQL[T]) scan[P any](c Context, params P, to func(T) error) error {
 	n := time.Now()
 	if c == nil {
 		c, _ = context.WithTimeout(Shutdown, time.Second*5)
@@ -223,7 +223,7 @@ func (s SQL[T]) connection(ctx Context) (*SQLDB, string, error) {
 //   - string: Processed SQL query with placeholders for the selected dialect
 //   - []any: Slice of parameter values corresponding to placeholders
 //   - error: Error if query processing fails
-func (s SQL[T]) query(params any, dialect string) (string, []any, error) {
+func (s SQL[T]) query[P any](params P, dialect string) (string, []any, error) {
 	in := string(s)
 	if in == "" {
 		return in, nil, nil
