@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"regexp"
 	"strconv"
@@ -70,24 +71,22 @@ func (s SQL[T]) Write(c Context, tt ...T) error {
 	return nil
 }
 
-func (s SQL[T]) Read[P any](ctx Context, params P) ([]T, error) {
+func (s SQL[T]) Read[Q any](ctx Context, params Q) ([]T, error) {
 	if InUnitTests() {
 		return []T{}, nil
 	}
-	executor, err := s.connection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var tt []T
-	err = s.read(ctx, executor, params, func(t T) error { tt = append(tt, t); return nil })
-	return tt, err
+	return Readers.read(ctx, s.Query(params))
+}
+
+func (s SQL[T]) Query[Q any](params Q) Reader[T] {
+	return &sqlReader[T, Q]{sql: s, params: params}
 }
 
 func (s SQL[T]) String() string {
 	return string(s)
 }
 
-func (s SQL[T]) Stream[P any](ctx Context, params P) <-chan T {
+func (s SQL[T]) Stream[Q any](ctx Context, params Q) <-chan T {
 	ch := make(chan T)
 	if InUnitTests() {
 		close(ch)
@@ -117,7 +116,7 @@ func (s SQL[T]) Stream[P any](ctx Context, params P) <-chan T {
 	return ch
 }
 
-func (s SQL[T]) Each[P any](ctx Context, params P) Iterator[T, error] {
+func (s SQL[T]) Each[Q any](ctx Context, params Q) Iterator[T, error] {
 	if InUnitTests() {
 		return func(func(T, error) bool) {}
 	}
@@ -135,7 +134,7 @@ func (s SQL[T]) Each[P any](ctx Context, params P) Iterator[T, error] {
 	}
 }
 
-func (s SQL[T]) read[P any](c Context, e sqlExecutor, params P, to func(T) error) error {
+func (s SQL[T]) read[Q any](c Context, e sqlExecutor, params Q, to func(T) error) error {
 	if c == nil {
 		return ErrSQL.New("context is nil")
 	}
@@ -567,4 +566,91 @@ func (w valuer) Value() (driver.Value, error) {
 	default:
 		return fmt.Sprint(v), nil
 	}
+}
+
+type sqlReader[T, Q any] struct {
+	sql    SQL[T]
+	params Q
+	rows   *sql.Rows
+	start  time.Time
+	count  int
+	done   bool
+	closed bool
+}
+
+func (r *sqlReader[T, Q]) Read(ctx Context, dst []T) (int, error) {
+	if r.closed {
+		return 0, ErrSQL.New("reader is closed")
+	}
+	if r.done {
+		return 0, io.EOF
+	}
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	if InUnitTests() {
+		r.done = true
+		return 0, io.EOF
+	}
+	if r.rows == nil {
+		connection, err := r.sql.connection(ctx)
+		if err != nil {
+			return 0, err
+		}
+		dialect, err := RDBMS.dialect(connection)
+		if err != nil {
+			return 0, err
+		}
+		query, params, err := r.sql.query(r.params, dialect)
+		if err != nil {
+			return 0, err
+		}
+		r.rows, err = connection.QueryContext(ctx, query, params...)
+		if err != nil {
+			return 0, ErrSQL.Wrap(err)
+		}
+		r.start = time.Now()
+	}
+
+	n := 0
+	for n < len(dst) && r.rows.Next() {
+		var scanned scanner[T]
+		if err := r.rows.Scan(&scanned); err != nil {
+			return n, ErrSQL.Wrap(err)
+		}
+		dst[n] = scanned.T
+		n++
+		r.count++
+	}
+	if err := r.rows.Err(); err != nil {
+		return n, ErrSQL.Wrap(err)
+	}
+	if n < len(dst) {
+		r.done = true
+		r.logRead()
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (r *sqlReader[T, Q]) Close() error {
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	if r.rows == nil {
+		return nil
+	}
+	if err := r.rows.Close(); err != nil {
+		return ErrSQL.Wrap(err)
+	}
+	return nil
+}
+
+func (r *sqlReader[T, Q]) logRead() {
+	elapsed := time.Since(r.start)
+	var value T
+	name := NewReflect(value).Name()
+	log_.Trace(4).Debugf(name+": found %d in time of %s %v", r.count, elapsed, r.params)
+	Metrics.Percentile("sql_read_in_seconds{name=%q}", elapsed.Seconds(), name)
 }
